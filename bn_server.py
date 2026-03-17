@@ -361,7 +361,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
   <div class="page" id="page-1">
     <div class="chart-wrap">
       <div class="chart-hd">
-        <span class="chart-hd-t">NSE:NIFTYBANK · LIVE</span>
+        <span class="chart-hd-t">NSE:BANKNIFTY · LIVE</span>
         <div class="tf-row">
           <button class="tf" onclick="setTV('1')">1m</button>
           <button class="tf on" onclick="setTV('5')">5m</button>
@@ -385,7 +385,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
             if(!tvLoaded||typeof TradingView==='undefined'){setTimeout(()=>initTV(iv),500);return;}
             if(tvW){try{tvW.remove();}catch(e){}}
             document.getElementById('tv_chart').innerHTML='';
-            tvW=new TradingView.widget({autosize:true,symbol:"NSE:NIFTYBANK",interval:iv||"5",timezone:"Asia/Kolkata",theme:"dark",style:"1",locale:"en",toolbar_bg:"#0A1018",enable_publishing:false,save_image:false,container_id:"tv_chart",backgroundColor:"#060A10",gridColor:"#192336",studies:["MASimple@tv-basicstudies","MASimple@tv-basicstudies","RSI@tv-basicstudies"]});
+            tvW=new TradingView.widget({autosize:true,symbol:"NSE:BANKNIFTY",interval:iv||"5",timezone:"Asia/Kolkata",theme:"dark",style:"1",locale:"en",toolbar_bg:"#0A1018",enable_publishing:false,save_image:false,container_id:"tv_chart",backgroundColor:"#060A10",gridColor:"#192336",studies:["MASimple@tv-basicstudies","MASimple@tv-basicstudies","RSI@tv-basicstudies"]});
           }
           function setTV(iv){document.querySelectorAll('.tf').forEach(b=>{b.classList.toggle('on',b.textContent==={'1':'1m','5':'5m','15':'15m','60':'1h'}[iv]);});initTV(iv);}
           window.addEventListener('load',function(){setTimeout(loadTV,300);});
