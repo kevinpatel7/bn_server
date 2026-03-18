@@ -407,39 +407,24 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
   <div class="page" id="page-1">
     <div class="chart-wrap">
       <div class="chart-hd">
-        <span class="chart-hd-t">NSE:BANKNIFTY · LIVE</span>
+        <span class="chart-hd-t">BANKNIFTY · UPSTOX LIVE</span>
         <div class="tf-row">
-          <button class="tf" onclick="setTV('1')">1m</button>
-          <button class="tf on" onclick="setTV('5')">5m</button>
-          <button class="tf" onclick="setTV('15')">15m</button>
-          <button class="tf" onclick="setTV('60')">1h</button>
+          <button class="tf" onclick="loadChart(1)">1m</button>
+          <button class="tf on" onclick="loadChart(5)">5m</button>
+          <button class="tf" onclick="loadChart(15)">15m</button>
+          <button class="tf" onclick="loadChart(60)">1h</button>
         </div>
       </div>
-      <div class="chart-body">
-        <div class="tradingview-widget-container" style="height:100%;width:100%">
-          <div id="tv_chart" style="height:100%;width:100%"></div>
-          <script>
-          var currentIv='5';
-          function setTV(iv){
-            currentIv=iv;
-            document.querySelectorAll('.tf').forEach(b=>{
-              const map={'1':'1m','5':'5m','15':'15m','60':'1h'};
-              b.classList.toggle('on',b.textContent===map[iv]);
-            });
-            loadChart(iv);
-          }
-          function loadChart(iv){
-            const frame=document.getElementById('tv_chart');
-            frame.innerHTML='';
-            const iframe=document.createElement('iframe');
-            iframe.style.cssText='width:100%;height:100%;border:none;';
-            iframe.src='https://s.tradingview.com/widgetembed/?frameElementId=tv_embed&symbol=NSE%3ABANKNIFTY&interval='+iv+'&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0A1018&studies=MASimple%40tv-basicstudies%1FMASimple%40tv-basicstudies%1FRSI%40tv-basicstudies&theme=dark&style=1&timezone=Asia%2FKolkata&studies_overrides=%7B%7D&overrides=%7B%7D&enabled_features=%5B%5D&disabled_features=%5B%5D&locale=en&utm_source=&utm_medium=widget&utm_campaign=chart&utm_term=NSE%3ABANKNIFTY';
-            frame.appendChild(iframe);
-          }
-          window.addEventListener('load',function(){setTimeout(()=>loadChart('5'),300);});
-          </script>
-        </div>
+      <div class="chart-body" style="position:relative">
+        <div id="lw_chart" style="width:100%;height:100%"></div>
+        <div id="chart-loading" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--cond);font-size:13px;color:var(--muted);font-weight:700;letter-spacing:0.1em;text-align:center">LOADING...</div>
+        <div id="chart-legend" style="position:absolute;top:8px;left:8px;font-size:9px;color:var(--white);background:rgba(6,10,16,0.85);padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;letter-spacing:0.05em"></div>
       </div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;padding:4px 2px">
+      <span style="font-size:8px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="width:14px;height:2px;background:#00BFA5;display:inline-block;border-radius:1px"></span>EMA 9</span>
+      <span style="font-size:8px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="width:14px;height:2px;background:#FF6D00;display:inline-block;border-radius:1px"></span>EMA 21</span>
+      <span style="font-size:8px;color:var(--muted);display:flex;align-items:center;gap:4px"><span style="width:14px;height:2px;background:#FFD600;display:inline-block;border-radius:1px;opacity:0.7"></span>VWAP</span>
     </div>
   </div>
 
@@ -594,8 +579,112 @@ function addMsg(html,type){const box=document.getElementById('ai-msgs');const el
 async function sendAI(){const inp=document.getElementById('ai-in');const msg=inp.value.trim();if(!msg)return;inp.value='';document.getElementById('ai-btn').disabled=true;addMsg(msg,'user');const td=addMsg('<div class="typing"><span></span><span></span><span></span></div>','bot');try{const r=await callAria(msg);td.className='msg bot';td.innerHTML=r;}catch(e){td.className='msg bot';td.innerHTML='Error: '+e.message;}document.getElementById('ai-btn').disabled=false;}
 function ariaExplain(sig){if(!sig||sig.signal==='WAIT')return;const isBuy=sig.signal==='BUY';addMsg(`${isBuy?'🟢':'🔴'} <strong>${isBuy?'BUY CALL':'BUY PUT'}</strong> — ${sig.strike} ${sig.otype} · ${sig.conf}% conf<br>Entry: ₹${sig.entry?.toLocaleString('en-IN')||'—'} · SL: ₹${sig.sl?.toLocaleString('en-IN')||'—'}`,'bot');}
 
-// Boot — show setup if no URL saved
+// CHART ENGINE
+let chartInst=null;
+function loadLWC(cb){if(window.LightweightCharts){cb();return;}const s=document.createElement('script');s.src='https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js';s.onload=cb;document.head.appendChild(s);}
+function cEMA(d,p){const k=2/(p+1);let e=d[0].close;return d.map((c,i)=>{e=i===0?c.close:c.close*k+e*(1-k);return{time:c.time,value:+e.toFixed(2)};});}
+function cVWAP(d){let tv=0,v=0;return d.map(c=>{const tp=(c.high+c.low+c.close)/3;tv+=tp*c.volume;v+=c.volume;return{time:c.time,value:v>0?+(tv/v).toFixed(2):c.close};});}
+function cRSI(d,p=14){const out=[];let ag=0,al=0;for(let i=1;i<d.length;i++){const dv=d[i].close-d[i-1].close;if(i<=p){if(dv>0)ag+=dv;else al-=dv;if(i===p){ag/=p;al/=p;out.push({time:d[i].time,value:al===0?100:+(100-100/(1+ag/al)).toFixed(1)});}}else{ag=(ag*(p-1)+(dv>0?dv:0))/p;al=(al*(p-1)+(dv<0?-dv:0))/p;out.push({time:d[i].time,value:al===0?100:+(100-100/(1+ag/al)).toFixed(1)});}}return out;}
+function buildChart(candles){
+  const loadEl=document.getElementById('chart-loading');
+  if(!candles||!candles.length){loadEl.style.display='block';loadEl.textContent='No candle data available.';return;}
+  loadEl.style.display='none';
+  const c=document.getElementById('chart-container'),rc=document.getElementById('rsi-container');
+  c.innerHTML='';rc.innerHTML='';
+  const ch=LightweightCharts.createChart(c,{width:c.clientWidth,height:c.clientHeight||280,layout:{background:{color:'#060A10'},textColor:'#4A6070'},grid:{vertLines:{color:'#192336'},horzLines:{color:'#192336'}},crosshair:{mode:1},rightPriceScale:{borderColor:'#192336'},timeScale:{borderColor:'#192336',timeVisible:true,secondsVisible:false}});
+  const cs=ch.addCandlestickSeries({upColor:'#00E676',downColor:'#FF1744',borderUpColor:'#00E676',borderDownColor:'#FF1744',wickUpColor:'#00E676',wickDownColor:'#FF1744'});
+  cs.setData(candles);
+  const vs=ch.addHistogramSeries({priceScaleId:'vol',scaleMargins:{top:0.85,bottom:0}});
+  vs.setData(candles.map(c=>({time:c.time,value:c.volume,color:c.close>=c.open?'rgba(0,230,118,0.2)':'rgba(255,23,68,0.2)'})));
+  const e9=ch.addLineSeries({color:'#FF6D00',lineWidth:1,priceLineVisible:false,lastValueVisible:false});e9.setData(cEMA(candles,9));
+  const e21=ch.addLineSeries({color:'#00BFA5',lineWidth:1,priceLineVisible:false,lastValueVisible:false});e21.setData(cEMA(candles,21));
+  const vw=ch.addLineSeries({color:'#FFD600',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false});vw.setData(cVWAP(candles));
+  ch.timeScale().fitContent();chartInst=ch;
+  const rc2=LightweightCharts.createChart(rc,{width:rc.clientWidth,height:76,layout:{background:{color:'#0A1018'},textColor:'#4A6070'},grid:{vertLines:{color:'#192336'},horzLines:{color:'#0E1620'}},rightPriceScale:{borderColor:'#192336'},timeScale:{visible:false},crosshair:{mode:1}});
+  const rs=rc2.addLineSeries({color:'#9C27B0',lineWidth:1,lastValueVisible:true,priceLineVisible:false});
+  const rd=cRSI(candles,14);rs.setData(rd);
+  if(rd.length){const t0=rd[0].time,t1=rd[rd.length-1].time;rc2.addLineSeries({color:'rgba(255,23,68,0.35)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}).setData([{time:t0,value:70},{time:t1,value:70}]);rc2.addLineSeries({color:'rgba(0,230,118,0.35)',lineWidth:1,lineStyle:2,priceLineVisible:false,lastValueVisible:false}).setData([{time:t0,value:30},{time:t1,value:30}]);}
+  const ea=cEMA(candles,9),eb=cEMA(candles,21),vc=cVWAP(candles),rf=cRSI(candles,14);
+  const fi=v=>Math.round(v).toLocaleString('en-IN');
+  document.getElementById('chart-legend').innerHTML=`<span style='color:#FF6D00'>EMA9 ${fi(ea[ea.length-1]?.value||0)}</span> <span style='color:#00BFA5'>EMA21 ${fi(eb[eb.length-1]?.value||0)}</span> <span style='color:#FFD600'>VWAP ${fi(vc[vc.length-1]?.value||0)}</span> <span style='color:#9C27B0'>RSI ${rf[rf.length-1]?.value||'-'}</span>`;
+  new ResizeObserver(()=>{if(ch)ch.resize(c.clientWidth,c.clientHeight||280);if(rc2)rc2.resize(rc.clientWidth,76);}).observe(c);
+}
+async function loadChart(iv){
+  document.querySelectorAll('.tf').forEach(b=>{const m={'1':'1m','5':'5m','15':'15m','60':'1h'};b.classList.toggle('on',b.textContent===m[iv]);});
+  const el=document.getElementById('chart-loading');el.style.display='block';el.textContent='Fetching '+iv+'m candles from Upstox...';
+  try{const res=await fetch('/api/candles?interval='+iv);const d=await res.json();loadLWC(()=>buildChart(d.candles||[]));}
+  catch(e){el.textContent='Error loading chart: '+e.message;}
+}
+document.querySelectorAll('.tab').forEach((t,i)=>{t.addEventListener('click',()=>{if(i===1&&!chartInst)setTimeout(()=>loadChart('5'),200);});});
+// Boot
 fetchFromServer();setInterval(fetchFromServer,30000);
+
+// ═══════ UPSTOX CHART ENGINE ═══════
+var lwC=null,cSeries=null,e9S=null,e21S=null,vwS=null,curIv=5;
+
+function initChart(){
+  if(typeof LightweightCharts==='undefined'){setTimeout(initChart,400);return;}
+  var el=document.getElementById('lw_chart');
+  if(!el||lwC)return;
+  lwC=LightweightCharts.createChart(el,{
+    width:el.clientWidth,height:el.clientHeight||320,
+    layout:{background:{color:'#060A10'},textColor:'#4A6070'},
+    grid:{vertLines:{color:'#192336'},horzLines:{color:'#192336'}},
+    rightPriceScale:{borderColor:'#192336'},
+    timeScale:{borderColor:'#192336',timeVisible:true,secondsVisible:false},
+  });
+  cSeries=lwC.addCandlestickSeries({upColor:'#00E676',downColor:'#FF1744',borderUpColor:'#00E676',borderDownColor:'#FF1744',wickUpColor:'#00E676',wickDownColor:'#FF1744'});
+  e9S=lwC.addLineSeries({color:'#00BFA5',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  e21S=lwC.addLineSeries({color:'#FF6D00',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+  vwS=lwC.addLineSeries({color:'#FFD600',lineWidth:1,lineStyle:1,priceLineVisible:false,lastValueVisible:false});
+  lwC.subscribeCrosshairMove(function(p){
+    if(!p.time)return;
+    var d=p.seriesData&&p.seriesData.get(cSeries);
+    if(!d)return;
+    var leg=document.getElementById('chart-legend');
+    if(leg)leg.textContent='O:'+Math.round(d.open).toLocaleString('en-IN')+'  H:'+Math.round(d.high).toLocaleString('en-IN')+'  L:'+Math.round(d.low).toLocaleString('en-IN')+'  C:'+Math.round(d.close).toLocaleString('en-IN');
+  });
+  window.addEventListener('resize',function(){if(lwC&&el)lwC.resize(el.clientWidth,el.clientHeight);});
+  loadChart(5);
+}
+
+function calcEMA(data,p){var k=2/(p+1),e=data[0].close;return data.map(function(d,i){if(i>0)e=d.close*k+e*(1-k);return{time:d.time,value:+e.toFixed(2)};});}
+function calcVWAP(data){var pv=0,v=0;return data.map(function(d){var tp=(d.high+d.low+d.close)/3;pv+=tp*(d.volume||1);v+=(d.volume||1);return{time:d.time,value:+(pv/v).toFixed(2)};});}
+
+async function loadChart(iv){
+  curIv=iv;
+  document.querySelectorAll('.tf').forEach(function(b){var m={1:'1m',5:'5m',15:'15m',60:'1h'};b.classList.toggle('on',b.textContent===m[iv]);});
+  var ld=document.getElementById('chart-loading');
+  if(ld){ld.style.display='block';ld.textContent='LOADING CANDLES...';}
+  try{
+    var res=await fetchT('/api/candles?interval='+iv,12000);
+    var data=await res.json();
+    var c=data.candles||[];
+    if(!c.length){if(ld)ld.textContent='Market closed — no candles yet';return;}
+    if(ld)ld.style.display='none';
+    if(!lwC)initChart();
+    setTimeout(function(){
+      if(!cSeries)return;
+      cSeries.setData(c);
+      e9S.setData(calcEMA(c,9));
+      e21S.setData(calcEMA(c,21));
+      vwS.setData(calcVWAP(c));
+      lwC.timeScale().fitContent();
+    },100);
+  }catch(e){if(ld)ld.textContent='Error: '+e.message;}
+}
+
+// Load Lightweight Charts library
+(function(){
+  var s=document.createElement('script');
+  s.src='https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js';
+  s.onload=function(){setTimeout(initChart,200);};
+  document.head.appendChild(s);
+})();
+
+// Auto-refresh chart every 30s when chart tab open
+setInterval(function(){if(document.getElementById('page-1').classList.contains('on'))loadChart(curIv);},30000);
+
 </script>
 </body>
 </html>
@@ -713,6 +802,99 @@ def fetch_globals():
     except Exception as e:
         print(f"[GLOBALS] {e}")
 
+
+def fetch_candles(interval='5minute', days=2):
+    """Fetch OHLCV candle data from Upstox for the chart."""
+    try:
+        from datetime import timedelta
+        end = date.today()
+        start = end - timedelta(days=days)
+        # Map interval to Upstox format
+        iv_map = {'1':'1minute','5':'5minute','15':'15minute','60':'60minute',
+                  '1minute':'1minute','5minute':'5minute','15minute':'15minute','60minute':'60minute'}
+        iv = iv_map.get(str(interval), '5minute')
+        url = (f"https://api.upstox.com/v2/historical-candle/"
+               f"{requests.utils.quote(BN_KEY)}/{iv}/"
+               f"{end.strftime('%Y-%m-%d')}/{start.strftime('%Y-%m-%d')}")
+        r = requests.get(url, headers=hdr(), timeout=15)
+        if r.status_code != 200:
+            print(f"[CANDLES] HTTP {r.status_code}: {r.text[:200]}")
+            return []
+        data = r.json().get("data", {}).get("candles", [])
+        # Upstox format: [timestamp, open, high, low, close, volume, oi]
+        candles = []
+        for c in data:
+            try:
+                ts = int(datetime.fromisoformat(c[0].replace('Z','+00:00')).timestamp())
+                candles.append({"time": ts, "open": c[1], "high": c[2],
+                                "low": c[3], "close": c[4], "volume": c[5]})
+            except: pass
+        candles.sort(key=lambda x: x["time"])
+        print(f"[CANDLES] Fetched {len(candles)} candles ({iv})")
+        return candles
+    except Exception as e:
+        print(f"[CANDLES] Error: {e}")
+        return []
+
+# Candle cache
+candle_cache = {"1": [], "5": [], "15": [], "60": [], "last_fetch": {}}
+
+def refresh_candles(interval='5'):
+    """Refresh candle cache for given interval."""
+    iv_map = {"1":"1minute","5":"5minute","15":"15minute","60":"60minute"}
+    data = fetch_candles(iv_map.get(interval,'5minute'))
+    if data:
+        candle_cache[interval] = data
+        candle_cache["last_fetch"][interval] = datetime.now().strftime("%H:%M:%S")
+    return data
+
+# Candle cache
+candle_cache = {"1": [], "5": [], "15": [], "60": []}
+
+def fetch_candles(interval="5"):
+    """Fetch historical candles from Upstox for given interval in minutes."""
+    if not state["access_token"]:
+        return []
+    try:
+        from datetime import timedelta
+        interval_map = {"1":"1minute","5":"5minute","15":"15minute","60":"60minute"}
+        upstox_interval = interval_map.get(str(interval), "5minute")
+        today = date.today()
+        # For intraday use today; if weekend/after hours use last trading day
+        weekday = today.weekday()
+        if weekday == 5: today = today - timedelta(days=1)
+        elif weekday == 6: today = today - timedelta(days=2)
+        from_date = today.strftime("%Y-%m-%d")
+        to_date   = today.strftime("%Y-%m-%d")
+        url = (f"https://api.upstox.com/v2/historical-candle/intraday/"
+               f"{requests.utils.quote(BN_KEY)}/{upstox_interval}")
+        r = requests.get(url, headers=hdr(), timeout=10)
+        if r.status_code != 200:
+            print(f"[CANDLES] HTTP {r.status_code}: {r.text[:200]}")
+            return []
+        data = r.json().get("data", {}).get("candles", [])
+        # Upstox format: [timestamp, open, high, low, close, volume, oi]
+        candles = []
+        for c in data:
+            try:
+                ts = int(datetime.fromisoformat(c[0].replace("Z","+00:00")).timestamp())
+                candles.append({
+                    "time": ts,
+                    "open":   round(float(c[1]), 2),
+                    "high":   round(float(c[2]), 2),
+                    "low":    round(float(c[3]), 2),
+                    "close":  round(float(c[4]), 2),
+                    "volume": int(c[5]),
+                })
+            except: pass
+        candles.sort(key=lambda x: x["time"])
+        candle_cache[str(interval)] = candles
+        print(f"[CANDLES] {interval}m: {len(candles)} candles fetched")
+        return candles
+    except Exception as e:
+        print(f"[CANDLES] Error: {e}")
+        return []
+
 def fetch_prices():
     if not state["access_token"]:
         cache["error"] = "Not authenticated"; cache["source"] = "unauthenticated"; return False
@@ -741,6 +923,8 @@ def fetch_prices():
         fetch_globals()
         cache["market_open"] = True
         save_last_session()
+        # Refresh 5min candles every fetch cycle
+        refresh_candles("5")
         print(f"[{cache['last_updated']}] BN ₹{spot:,.0f} | VIX {cache['vix']} | PCR {cache['pcr']}")
         return True
     except Exception as e:
@@ -799,6 +983,26 @@ def price_api():
 @app.route("/api/status")
 def status(): return jsonify({"running": True, "authenticated": cache["authenticated"],
     "spot": cache["spot"], "last_updated": cache["last_updated"], "source": cache["source"]})
+
+@app.route("/api/candles")
+def candles_api():
+    interval = request.args.get("interval", "5")
+    if interval not in candle_cache or not candle_cache[interval]:
+        # Fetch on demand if not cached
+        data = refresh_candles(interval)
+    else:
+        data = candle_cache[interval]
+    return jsonify({"candles": data, "interval": interval,
+                    "count": len(data), "last_fetch": candle_cache["last_fetch"].get(interval,"")})
+
+@app.route("/api/candles")
+def candles_api():
+    interval = request.args.get("interval", "5")
+    cached = candle_cache.get(str(interval), [])
+    if not cached:
+        # Fetch on demand if not cached
+        cached = fetch_candles(interval)
+    return jsonify({"candles": cached, "interval": interval, "count": len(cached)})
 
 @app.route("/ping")
 def ping(): return "pong"
