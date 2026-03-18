@@ -905,14 +905,17 @@ def fetch_prices():
         if not bn: raise ValueError("No BN data")
         spot = bn.get("last_price", 0)
         if not spot or spot < 30000 or spot > 110000: raise ValueError(f"Bad price: {spot}")
-        ohlc = bn.get("ohlc", {})
+        ohlc = bn.get("ohlc", {}) or {}
+        def safe(v, default=0): 
+            try: return round(float(v),2) if v is not None else default
+            except: return default
         cache.update({
-            "spot": round(spot,2), "change": round(bn.get("net_change",0),2),
-            "pct":  round(bn.get("change_percentage",0),2),
-            "high": round(ohlc.get("high",spot),2), "low": round(ohlc.get("low",spot),2),
-            "open": round(ohlc.get("open",spot),2),
-            "vwap": round(bn.get("average_price",spot),2),
-            "vix":  round(vix.get("last_price",0),2),
+            "spot": safe(spot), "change": safe(bn.get("net_change")),
+            "pct":  safe(bn.get("change_percentage")),
+            "high": safe(ohlc.get("high"), safe(spot)), "low": safe(ohlc.get("low"), safe(spot)),
+            "open": safe(ohlc.get("open"), safe(spot)),
+            "vwap": safe(bn.get("average_price"), safe(spot)),
+            "vix":  safe(vix.get("last_price") if vix else 0),
             "last_updated": datetime.now().strftime("%H:%M:%S"),
             "source": "Upstox Live ✓", "error": "", "authenticated": True,
         })
