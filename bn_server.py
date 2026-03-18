@@ -41,7 +41,53 @@ cache = {
     "option_chain": [],
     "last_updated": "", "source": "starting",
     "error": "", "authenticated": False,
+    "market_open": False,
+    "last_session": {},  # stores last known good market data
 }
+LAST_SESSION_FILE = "last_session.json"
+
+def save_last_session():
+    """Save last good data to disk so it survives server restarts."""
+    try:
+        session = {k: cache[k] for k in [
+            "spot","change","pct","high","low","open","vwap",
+            "vix","pcr","max_pain","tot_ce_oi","tot_pe_oi",
+            "sp500_chg","crude_chg","gold_chg","usdinr","option_chain","last_updated"
+        ]}
+        session["saved_at"] = datetime.now().strftime("%d %b %Y %H:%M IST")
+        with open(LAST_SESSION_FILE, "w") as f:
+            json.dump(session, f)
+        cache["last_session"] = session
+        print(f"[SESSION] Saved last session data.")
+    except Exception as e:
+        print(f"[SESSION] Save error: {e}")
+
+def load_last_session():
+    """Load last session data from disk."""
+    try:
+        with open(LAST_SESSION_FILE) as f:
+            session = json.load(f)
+            cache["last_session"] = session
+            print(f"[SESSION] Loaded last session from {session.get('saved_at','?')}")
+    except:
+        pass
+
+def is_market_open():
+    """Check if NSE market is currently open."""
+    now = datetime.now()
+    # Convert to IST (UTC+5:30)
+    ist_hour = (now.hour + 5) % 24
+    ist_min = (now.minute + 30) % 60
+    if now.minute + 30 >= 60:
+        ist_hour = (now.hour + 6) % 24
+    # Market open 9:15 to 15:30 IST, Monday-Friday
+    weekday = now.weekday()  # 0=Mon, 6=Sun
+    if weekday >= 5:  # Weekend
+        return False
+    open_mins = ist_hour * 60 + ist_min
+    market_start = 9 * 60 + 15   # 9:15
+    market_end = 15 * 60 + 30    # 15:30
+    return market_start <= open_mins <= market_end
 
 TERMINAL_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -385,7 +431,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
             if(!tvLoaded||typeof TradingView==='undefined'){setTimeout(()=>initTV(iv),500);return;}
             if(tvW){try{tvW.remove();}catch(e){}}
             document.getElementById('tv_chart').innerHTML='';
-            tvW=new TradingView.widget({autosize:true,symbol:"NSE:BANKNIFTY",interval:iv||"5",timezone:"Asia/Kolkata",theme:"dark",style:"1",locale:"en",toolbar_bg:"#0A1018",enable_publishing:false,save_image:false,container_id:"tv_chart",backgroundColor:"#060A10",gridColor:"#192336",studies:["MASimple@tv-basicstudies","MASimple@tv-basicstudies","RSI@tv-basicstudies"]});
+            tvW=new TradingView.widget({autosize:true,symbol:"CAPITALCOM:NIFTYBANK",interval:iv||"5",timezone:"Asia/Kolkata",theme:"dark",style:"1",locale:"en",toolbar_bg:"#0A1018",enable_publishing:false,save_image:false,hide_side_toolbar:false,allow_symbol_change:true,container_id:"tv_chart",backgroundColor:"#060A10",gridColor:"#192336",studies:["MASimple@tv-basicstudies","MASimple@tv-basicstudies","RSI@tv-basicstudies"]});
           }
           function setTV(iv){document.querySelectorAll('.tf').forEach(b=>{b.classList.toggle('on',b.textContent==={'1':'1m','5':'5m','15':'15m','60':'1h'}[iv]);});initTV(iv);}
           window.addEventListener('load',function(){setTimeout(loadTV,300);});
@@ -467,7 +513,22 @@ async function saveAndConnect(){
   }catch(e){showResult('❌ Cannot connect: '+e.message,'var(--red)');}
 }
 function showResult(m,c){const el=document.getElementById('test-result');el.style.display='block';el.style.background=c+'22';el.style.color=c;el.style.border='1px solid '+c+'44';el.style.borderRadius='3px';el.style.padding='8px 10px';el.style.fontSize='9px';el.style.lineHeight='1.6';el.textContent=m;}
-function setConn(ok){const p=document.getElementById('conn-pill');const d=p.querySelector('.bd');const c=ok?'var(--green)':'var(--red)';document.getElementById('conn-txt').textContent=ok?'LIVE':'OFFLINE';p.style.color=c;p.style.borderColor=c;d.style.background=c;}
+function setConn(ok,marketOpen,lastSessionTime){
+  const p=document.getElementById('conn-pill');const d=p.querySelector('.bd');
+  let label,c;
+  if(ok&&marketOpen){label='LIVE';c='var(--green)';}
+  else if(ok&&!marketOpen){label='CLOSED';c='var(--yellow)';}
+  else{label='OFFLINE';c='var(--red)';}
+  document.getElementById('conn-txt').textContent=label;
+  p.style.color=c;p.style.borderColor=c;d.style.background=c;
+  // Show/hide last session banner
+  let banner=document.getElementById('session-banner');
+  if(!banner){banner=document.createElement('div');banner.id='session-banner';
+    banner.style.cssText='background:rgba(255,214,0,0.08);border-bottom:1px solid rgba(255,214,0,0.2);padding:4px 14px;font-size:8px;color:var(--yellow);text-align:center;flex-shrink:0;letter-spacing:0.08em;font-weight:700;';
+    const tabs=document.getElementById('tabs');tabs.parentNode.insertBefore(banner,tabs);}
+  if(!marketOpen&&lastSessionTime){banner.textContent='MARKET CLOSED · Showing last session: '+lastSessionTime;banner.style.display='block';}
+  else{banner.style.display='none';}
+}
 
 // Fetch
 async function fetchFromServer(){
@@ -490,11 +551,11 @@ async function fetchFromServer(){
     else{S.candles.push({t,o:prev||d.spot,h:d.high||d.spot,l:d.low||d.spot,c:d.spot,v:1});}
     if(S.candles.length>200)S.candles=S.candles.slice(-200);
     document.getElementById('upd-ts').textContent=d.last_updated||'—';
-    setConn(true);
-    log('Live: BN ₹'+d.spot.toLocaleString('en-IN')+' · VIX '+d.vix+' · '+d.last_updated,true);
+    setConn(true,d.market_open!==false,d.last_session_time||'');
+    log((d.using_last_session?'Last session · ':'Live · ')+'BN ₹'+d.spot.toLocaleString('en-IN')+' · VIX '+d.vix+' · '+(d.last_session_time||d.last_updated),d.using_last_session?null:true);
     renderAll();
   }catch(e){
-    setConn(false);
+    setConn(false,false,'');
     log('Server error: '+e.message,false);
   }
 }
@@ -676,16 +737,37 @@ def fetch_prices():
             cache.update({"option_chain": oc["chain"], "pcr": oc["pcr"],
                 "max_pain": oc["max_pain"], "tot_ce_oi": oc["tot_ce_oi"], "tot_pe_oi": oc["tot_pe_oi"]})
         fetch_globals()
+        cache["market_open"] = True
+        save_last_session()
         print(f"[{cache['last_updated']}] BN ₹{spot:,.0f} | VIX {cache['vix']} | PCR {cache['pcr']}")
         return True
     except Exception as e:
-        cache["error"] = str(e); cache["source"] = "error"
+        cache["error"] = str(e)
+        cache["market_open"] = False
+        # If market is closed, use last session data as display fallback
+        if cache["last_session"]:
+            cache["source"] = f"Last session: {cache['last_session'].get('saved_at','?')}"
+        else:
+            cache["source"] = "error"
         print(f"[FETCH] {e}"); return False
 
 def fetch_loop():
+    was_open = False
     while True:
-        fetch_prices()
-        time.sleep(30)
+        now_open = is_market_open()
+        cache["market_open"] = now_open
+        if now_open:
+            was_open = True
+            fetch_prices()
+            time.sleep(30)
+        else:
+            if was_open:
+                # Market just closed — save final session
+                print("[SESSION] Market closed. Saving final session data.")
+                save_last_session()
+                was_open = False
+            # Outside market hours — check every 5 min
+            time.sleep(300)
 
 @app.route("/")
 def index():
@@ -698,7 +780,19 @@ def index():
     return redirect("/terminal")
 
 @app.route("/api/price")
-def price_api(): return jsonify(cache)
+def price_api():
+    # When market closed, merge last session into response for display
+    response = dict(cache)
+    if not cache["market_open"] and cache["last_session"]:
+        ls = cache["last_session"]
+        for key in ["spot","change","pct","high","low","open","vwap",
+                    "vix","pcr","max_pain","tot_ce_oi","tot_pe_oi",
+                    "sp500_chg","crude_chg","gold_chg","usdinr","option_chain"]:
+            if response.get(key, 0) == 0 and ls.get(key):
+                response[key] = ls[key]
+        response["using_last_session"] = True
+        response["last_session_time"] = ls.get("saved_at", "")
+    return jsonify(response)
 
 @app.route("/api/status")
 def status(): return jsonify({"running": True, "authenticated": cache["authenticated"],
@@ -712,6 +806,7 @@ if __name__ == "__main__":
     print("  BN TERMINAL — UPSTOX ALL-IN-ONE SERVER")
     print("=" * 50)
     load_token()
+    load_last_session()
     if cache["authenticated"]:
         print("Fetching prices...")
         fetch_prices()
