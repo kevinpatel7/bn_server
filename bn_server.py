@@ -984,16 +984,6 @@ def price_api():
 def status(): return jsonify({"running": True, "authenticated": cache["authenticated"],
     "spot": cache["spot"], "last_updated": cache["last_updated"], "source": cache["source"]})
 
-@app.route("/api/candles")
-def candles_api():
-    interval = request.args.get("interval", "5")
-    if interval not in candle_cache or not candle_cache[interval]:
-        # Fetch on demand if not cached
-        data = refresh_candles(interval)
-    else:
-        data = candle_cache[interval]
-    return jsonify({"candles": data, "interval": interval,
-                    "count": len(data), "last_fetch": candle_cache["last_fetch"].get(interval,"")})
 
 @app.route("/api/candles")
 def candles_api():
