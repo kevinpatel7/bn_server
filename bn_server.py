@@ -419,22 +419,24 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
         <div class="tradingview-widget-container" style="height:100%;width:100%">
           <div id="tv_chart" style="height:100%;width:100%"></div>
           <script>
-          var tvW,tvLoaded=false;
-          function loadTV(){
-            if(tvLoaded)return;
-            var s=document.createElement('script');
-            s.src='https://s3.tradingview.com/tv.js';
-            s.onload=function(){tvLoaded=true;initTV('5');};
-            document.head.appendChild(s);
+          var currentIv='5';
+          function setTV(iv){
+            currentIv=iv;
+            document.querySelectorAll('.tf').forEach(b=>{
+              const map={'1':'1m','5':'5m','15':'15m','60':'1h'};
+              b.classList.toggle('on',b.textContent===map[iv]);
+            });
+            loadChart(iv);
           }
-          function initTV(iv){
-            if(!tvLoaded||typeof TradingView==='undefined'){setTimeout(()=>initTV(iv),500);return;}
-            if(tvW){try{tvW.remove();}catch(e){}}
-            document.getElementById('tv_chart').innerHTML='';
-            tvW=new TradingView.widget({autosize:true,symbol:"NSE:BANKNIFTY",interval:iv||"5",timezone:"Asia/Kolkata",theme:"dark",style:"1",locale:"en",toolbar_bg:"#0A1018",enable_publishing:false,save_image:false,hide_side_toolbar:false,allow_symbol_change:true,container_id:"tv_chart",backgroundColor:"#060A10",gridColor:"#192336",studies:["MASimple@tv-basicstudies","MASimple@tv-basicstudies","RSI@tv-basicstudies"]});
+          function loadChart(iv){
+            const frame=document.getElementById('tv_chart');
+            frame.innerHTML='';
+            const iframe=document.createElement('iframe');
+            iframe.style.cssText='width:100%;height:100%;border:none;';
+            iframe.src='https://s.tradingview.com/widgetembed/?frameElementId=tv_embed&symbol=NSE%3ABANKNIFTY&interval='+iv+'&hidesidetoolbar=0&hidetoptoolbar=0&symboledit=1&saveimage=0&toolbarbg=0A1018&studies=MASimple%40tv-basicstudies%1FMASimple%40tv-basicstudies%1FRSI%40tv-basicstudies&theme=dark&style=1&timezone=Asia%2FKolkata&studies_overrides=%7B%7D&overrides=%7B%7D&enabled_features=%5B%5D&disabled_features=%5B%5D&locale=en&utm_source=&utm_medium=widget&utm_campaign=chart&utm_term=NSE%3ABANKNIFTY';
+            frame.appendChild(iframe);
           }
-          function setTV(iv){document.querySelectorAll('.tf').forEach(b=>{b.classList.toggle('on',b.textContent==={'1':'1m','5':'5m','15':'15m','60':'1h'}[iv]);});initTV(iv);}
-          window.addEventListener('load',function(){setTimeout(loadTV,300);});
+          window.addEventListener('load',function(){setTimeout(()=>loadChart('5'),300);});
           </script>
         </div>
       </div>
