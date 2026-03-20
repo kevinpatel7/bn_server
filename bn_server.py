@@ -947,22 +947,89 @@ def fetch_prices():
             cache["source"] = "error"
         print(f"[FETCH] {e}"); return False
 
+def load_historical_for_display():
+    """When market is closed, fetch yesterday's data so terminal shows something useful."""
+    try:
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        today = datetime.now(ist)
+        # Get last trading day (skip weekends)
+        offset = 1
+        while True:
+            last_day = today - timedelta(days=offset)
+            if last_day.weekday() < 5:  # Mon-Fri
+                break
+            offset += 1
+        last_str = last_day.strftime('%Y-%m-%d')
+        start_str = (last_day - timedelta(days=1)).strftime('%Y-%m-%d')
+        print(f"[HISTORICAL] Loading data for {last_str}")
+        # Fetch yesterday's quote from historical endpoint
+        url = (f"https://api.upstox.com/v2/historical-candle/"
+               f"{requests.utils.quote(BN_KEY)}/day/{last_str}/{start_str}")
+        r = requests.get(url, headers=hdr(), timeout=15)
+        if r.status_code == 200:
+            data = r.json().get("data", {}).get("candles", [])
+            if data:
+                c = data[0]  # Most recent day
+                spot = float(c[4])  # close price
+                hi = float(c[2])
+                lo = float(c[3])
+                op = float(c[1])
+                vw = (hi + lo + spot) / 3
+                saved_at = f"{last_str} (Previous Close)"
+                # Update cache with historical data for display
+                if not cache["last_session"]:
+                    cache["last_session"] = {
+                        "spot": spot, "change": 0, "pct": 0,
+                        "high": hi, "low": lo, "open": op, "vwap": vw,
+                        "vix": 0, "pcr": 1.0, "max_pain": round(spot/100)*100,
+                        "tot_ce_oi": 0, "tot_pe_oi": 0,
+                        "sp500_chg": 0, "crude_chg": 0, "gold_chg": 0, "usdinr": 0,
+                        "option_chain": [], "last_updated": last_str,
+                        "saved_at": saved_at
+                    }
+                    print(f"[HISTORICAL] Loaded: BN ₹{spot:,.0f} on {last_str}")
+        # Also load candles for chart display
+        url2 = (f"https://api.upstox.com/v2/historical-candle/"
+                f"{requests.utils.quote(BN_KEY)}/5minute/{last_str}/{start_str}")
+        r2 = requests.get(url2, headers=hdr(), timeout=15)
+        if r2.status_code == 200:
+            raw = r2.json().get("data", {}).get("candles", [])
+            candles = []
+            for c in raw:
+                try:
+                    ts = int(datetime.fromisoformat(c[0].replace('Z','+00:00')).timestamp())
+                    candles.append({"time": ts, "open": float(c[1]), "high": float(c[2]),
+                                    "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])})
+                except: pass
+            candles.sort(key=lambda x: x["time"])
+            if candles:
+                candle_cache["5"] = candles
+                print(f"[HISTORICAL] Loaded {len(candles)} candles for chart")
+    except Exception as e:
+        print(f"[HISTORICAL] Error: {e}")
+
 def fetch_loop():
     was_open = False
+    historical_loaded = False
     while True:
         now_open = is_market_open()
         cache["market_open"] = now_open
         if now_open:
             was_open = True
+            historical_loaded = False
             fetch_prices()
             time.sleep(30)
         else:
             if was_open:
-                # Market just closed — save final session
-                print("[SESSION] Market closed. Saving final session data.")
+                print("[SESSION] Market closed. Saving final session.")
                 save_last_session()
                 was_open = False
-            # Outside market hours — check every 5 min
+            # Load historical data when market is closed
+            if not historical_loaded:
+                print("[SESSION] Market closed — loading historical data for display.")
+                load_historical_for_display()
+                historical_loaded = True
             time.sleep(300)
 
 @app.route("/")
@@ -1014,8 +1081,12 @@ if __name__ == "__main__":
     load_token()
     load_last_session()
     if cache["authenticated"]:
-        print("Fetching prices...")
-        fetch_prices()
+        if is_market_open():
+            print("Market open — fetching live prices...")
+            fetch_prices()
+        else:
+            print("Market closed — loading historical data...")
+            load_historical_for_display()
         threading.Thread(target=fetch_loop, daemon=True).start()
     else:
         print("Open http://localhost:5000 → Login with Upstox")
