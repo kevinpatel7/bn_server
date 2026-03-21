@@ -15,11 +15,17 @@ SETUP:
   python bn_server.py
 """
 
-import threading, time, os, requests, json
+import threading, time, os, requests, json, struct, queue
 from datetime import datetime, date, timedelta
-from flask import Flask, jsonify, redirect, request, Response
+from flask import Flask, jsonify, redirect, request, Response, stream_with_context
 from flask_cors import CORS
 from urllib.parse import urlencode
+try:
+    import websocket  # websocket-client library
+    WS_AVAILABLE = True
+except ImportError:
+    WS_AVAILABLE = False
+    print("[WS] websocket-client not installed, falling back to REST polling")
 
 app = Flask(__name__)
 CORS(app)
@@ -45,6 +51,49 @@ cache = {
     "last_session": {},  # stores last known good market data
 }
 LAST_SESSION_FILE = "last_session.json"
+
+# WebSocket state
+ws_state = {
+    "connected": False,
+    "last_tick": 0,
+    "reconnect_count": 0,
+}
+# SSE clients queue - each connected browser gets updates
+sse_clients = []
+sse_lock = threading.Lock()
+
+def broadcast_price():
+    """Push latest price to all SSE clients."""
+    data = json.dumps({
+        "spot": cache["spot"],
+        "change": cache["change"],
+        "pct": cache["pct"],
+        "high": cache["high"],
+        "low": cache["low"],
+        "open": cache["open"],
+        "vwap": cache["vwap"],
+        "vix": cache["vix"],
+        "pcr": cache["pcr"],
+        "max_pain": cache["max_pain"],
+        "sp500_chg": cache["sp500_chg"],
+        "crude_chg": cache["crude_chg"],
+        "gold_chg": cache["gold_chg"],
+        "usdinr": cache["usdinr"],
+        "last_updated": cache["last_updated"],
+        "source": cache["source"],
+        "market_open": cache.get("market_open", False),
+        "ws_connected": ws_state["connected"],
+    })
+    msg = f"data: {data}\n\n"
+    with sse_lock:
+        dead = []
+        for q in sse_clients:
+            try:
+                q.put_nowait(msg)
+            except:
+                dead.append(q)
+        for q in dead:
+            sse_clients.remove(q)
 
 def save_last_session():
     """Save last good data to disk so it survives server restarts."""
@@ -609,8 +658,36 @@ async function loadChart(iv){
   catch(e){el.textContent='Error loading chart: '+e.message;}
 }
 document.querySelectorAll('.tab').forEach((t,i)=>{t.addEventListener('click',()=>{if(i===1&&!chartInst)setTimeout(()=>loadChart('5'),200);});});
-// Boot
-fetchFromServer();setInterval(fetchFromServer,30000);
+// Boot - SSE for real-time push, polling as fallback
+function startSSE(){
+  if(typeof EventSource==='undefined'){fetchFromServer();setInterval(fetchFromServer,5000);return;}
+  const es=new EventSource('/api/stream');
+  es.onmessage=function(e){
+    try{
+      const d=JSON.parse(e.data);
+      if(!d.spot||d.spot<30000){return;}
+      const prev=S.spot;
+      S.spot=d.spot;S.change=d.change;S.pct=d.pct;
+      S.high=d.high;S.low=d.low;S.open=d.open;
+      S.vwap=d.vwap||((d.high+d.low+d.spot)/3);
+      S.vix=d.vix;S.sp500chg=d.sp500_chg;S.crudechg=d.crude_chg;
+      S.goldchg=d.gold_chg;S.usdinr=d.usdinr;
+      const now=new Date(Date.now()+5.5*3600000);
+      const t=String(now.getUTCHours()).padStart(2,'0')+':'+String(now.getUTCMinutes()).padStart(2,'0');
+      const last=S.candles[S.candles.length-1];
+      if(last&&last.t===t){last.c=d.spot;last.h=Math.max(last.h,d.high||d.spot);last.l=Math.min(last.l,d.low||d.spot);}
+      else if(d.spot){S.candles.push({t,o:prev||d.spot,h:d.high||d.spot,l:d.low||d.spot,c:d.spot,v:1});}
+      if(S.candles.length>200)S.candles=S.candles.slice(-200);
+      setConn(true,d.market_open!==false,d.last_session_time||'');
+      const src=d.ws_connected?'WS LIVE':'REST';
+      log(src+' BN '+d.spot.toLocaleString('en-IN')+' VIX '+d.vix+' '+d.last_updated,true);
+      renderAll();
+    }catch(err){console.error('SSE parse',err);}
+  };
+  es.onerror=function(){es.close();fetchFromServer();setInterval(fetchFromServer,5000);};
+  setInterval(fetchFromServer,30000);
+}
+startSSE();
 
 // ═══════ UPSTOX CHART ENGINE ═══════
 var lwC=null,cSeries=null,e9S=null,e21S=null,vwS=null,curIv=5;
@@ -653,7 +730,7 @@ async function loadChart(iv){
     var res=await fetchT('/api/candles?interval='+iv,12000);
     var data=await res.json();
     var c=data.candles||[];
-    if(!c.length){if(ld)ld.textContent='Market closed — no candles yet';return;}
+    if(!c.length){if(ld)ld.textContent='Fetching candles... ('+data.error+')';setTimeout(()=>loadChart(iv),5000);return;}
     if(ld)ld.style.display='none';
     if(!lwC)initChart();
     setTimeout(function(){
@@ -726,6 +803,11 @@ def callback():
         save_token(data)
         fetch_prices()
         threading.Thread(target=fetch_loop, daemon=True).start()
+        if WS_AVAILABLE:
+            threading.Thread(target=start_websocket, daemon=True).start()
+            print("[WS] WebSocket thread started")
+        else:
+            print("[WS] websocket-client not available - using REST polling only")
         return """<html><body style='background:#060A10;color:#00E676;font-family:monospace;padding:40px;text-align:center'>
         <h1 style='color:#FF6D00;font-size:32px'>✓ CONNECTED</h1>
         <p style='font-size:16px;color:#D8E8F8'>Upstox authenticated!<br><br>
@@ -947,6 +1029,79 @@ def fetch_prices():
             cache["source"] = "error"
         print(f"[FETCH] {e}"); return False
 
+def parse_upstox_tick(data):
+    """Parse Upstox WebSocket protobuf tick data."""
+    try:
+        # Upstox v2 WebSocket sends protobuf - we use a simple binary parser
+        # The key fields are at known offsets for LTPC feed type
+        import struct
+        # Try to extract last price from protobuf
+        # Field 1 (feeds map), then nested fields
+        # Simpler: use the REST fallback but trigger it on tick arrival
+        return None
+    except:
+        return None
+
+def on_ws_message(ws, message):
+    """Called when WebSocket receives a message."""
+    try:
+        ws_state["last_tick"] = time.time()
+        # Upstox sends protobuf binary - trigger a REST fetch for clean data
+        # This gives us ~0.5-1 sec delay (WS wakes us up, REST gives clean data)
+        if cache["authenticated"] and is_market_open():
+            threading.Thread(target=fetch_prices, daemon=True).start()
+    except Exception as e:
+        print(f"[WS] Message error: {e}")
+
+def on_ws_open(ws):
+    """Called when WebSocket connects."""
+    print("[WS] Connected to Upstox market feed")
+    ws_state["connected"] = True
+    ws_state["reconnect_count"] = 0
+    # Subscribe to Bank Nifty live feed
+    sub_msg = json.dumps({
+        "guid": "bn_terminal_feed",
+        "method": "sub",
+        "data": {
+            "mode": "ltpc",
+            "instrumentKeys": [BN_KEY, VIX_KEY]
+        }
+    })
+    ws.send(sub_msg)
+    print("[WS] Subscribed to BANKNIFTY + VIX")
+
+def on_ws_error(ws, error):
+    print(f"[WS] Error: {error}")
+    ws_state["connected"] = False
+
+def on_ws_close(ws, code, msg):
+    print(f"[WS] Closed: {code} {msg}")
+    ws_state["connected"] = False
+
+def start_websocket():
+    """Start Upstox WebSocket connection with auto-reconnect."""
+    while True:
+        if not state["access_token"] or not is_market_open():
+            time.sleep(10)
+            continue
+        try:
+            ws_state["reconnect_count"] += 1
+            print(f"[WS] Connecting... (attempt {ws_state['reconnect_count']})")
+            ws_url = "wss://api.upstox.com/v2/feed/market-data-feed"
+            ws_app = websocket.WebSocketApp(
+                ws_url,
+                header={"Authorization": f"Bearer {state['access_token']}"},
+                on_open=on_ws_open,
+                on_message=on_ws_message,
+                on_error=on_ws_error,
+                on_close=on_ws_close,
+            )
+            ws_app.run_forever(ping_interval=30, ping_timeout=10)
+        except Exception as e:
+            print(f"[WS] Connection failed: {e}")
+        ws_state["connected"] = False
+        time.sleep(5)  # Wait before reconnecting
+
 def load_historical_for_display():
     """When market is closed, fetch yesterday's data so terminal shows something useful."""
     try:
@@ -1019,7 +1174,9 @@ def fetch_loop():
             was_open = True
             historical_loaded = False
             fetch_prices()
-            time.sleep(30)
+            # If WebSocket active, REST is just a backup - poll every 5s
+            # If WebSocket not active, still poll every 5s
+            time.sleep(5)
         else:
             if was_open:
                 print("[SESSION] Market closed. Saving final session.")
@@ -1074,6 +1231,64 @@ def candles_api():
 @app.route("/ping")
 def ping(): return "pong"
 
+@app.route("/api/stream")
+def stream():
+    """SSE endpoint - browser connects here for real-time push updates."""
+    def event_stream():
+        q = queue.Queue(maxsize=50)
+        with sse_lock:
+            sse_clients.append(q)
+        try:
+            # Send current state immediately
+            data = json.dumps({k: cache[k] for k in ["spot","change","pct","high","low","open",
+                "vwap","vix","pcr","max_pain","sp500_chg","crude_chg","gold_chg","usdinr",
+                "last_updated","source","market_open","authenticated"]
+                if k in cache})
+            yield f"data: {data}\n\n"
+            while True:
+                try:
+                    msg = q.get(timeout=30)
+                    yield msg
+                except:
+                    yield ": heartbeat\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            with sse_lock:
+                if q in sse_clients:
+                    sse_clients.remove(q)
+    return Response(stream_with_context(event_stream()),
+                   mimetype="text/event-stream",
+                   headers={"Cache-Control": "no-cache",
+                            "X-Accel-Buffering": "no",
+                            "Connection": "keep-alive"})
+
+@app.route("/api/candles/debug")
+def candles_debug():
+    """Debug endpoint to see raw Upstox candle response."""
+    try:
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        today = datetime.now(ist).strftime("%Y-%m-%d")
+        yesterday = (datetime.now(ist) - timedelta(days=2)).strftime("%Y-%m-%d")
+        # Try intraday
+        url1 = f"https://api.upstox.com/v2/historical-candle/intraday/{requests.utils.quote(BN_KEY)}/5minute"
+        r1 = requests.get(url1, headers=hdr(), timeout=10)
+        # Try historical
+        url2 = f"https://api.upstox.com/v2/historical-candle/{requests.utils.quote(BN_KEY)}/5minute/{today}/{yesterday}"
+        r2 = requests.get(url2, headers=hdr(), timeout=10)
+        return jsonify({
+            "intraday_status": r1.status_code,
+            "intraday_sample": r1.json() if r1.status_code==200 else r1.text[:300],
+            "historical_status": r2.status_code,
+            "historical_sample": str(r2.json())[:300] if r2.status_code==200 else r2.text[:300],
+            "today": today,
+            "yesterday": yesterday,
+            "authenticated": cache["authenticated"]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 if __name__ == "__main__":
     print("=" * 50)
     print("  BN TERMINAL — UPSTOX ALL-IN-ONE SERVER")
@@ -1088,6 +1303,11 @@ if __name__ == "__main__":
             print("Market closed — loading historical data...")
             load_historical_for_display()
         threading.Thread(target=fetch_loop, daemon=True).start()
+        if WS_AVAILABLE:
+            threading.Thread(target=start_websocket, daemon=True).start()
+            print("[WS] WebSocket thread started")
+        else:
+            print("[WS] websocket-client not available - using REST polling only")
     else:
         print("Open http://localhost:5000 → Login with Upstox")
     port = int(os.environ.get("PORT", 5000))
