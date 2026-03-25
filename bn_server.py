@@ -680,7 +680,8 @@ function startSSE(){
       if(S.candles.length>200)S.candles=S.candles.slice(-200);
       setConn(true,d.market_open!==false,d.last_session_time||'');
       const src=d.ws_connected?'WS LIVE':'REST';
-      log(src+' BN '+d.spot.toLocaleString('en-IN')+' VIX '+d.vix+' '+d.last_updated,true);
+      setConn(true,d.market_open!==false,d.last_session_time||'');
+    log(src+' BN '+d.spot.toLocaleString('en-IN')+' VIX '+d.vix+' '+d.last_updated,true);
       renderAll();
     }catch(err){console.error('SSE parse',err);}
   };
