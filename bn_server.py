@@ -658,37 +658,8 @@ async function loadChart(iv){
   catch(e){el.textContent='Error loading chart: '+e.message;}
 }
 document.querySelectorAll('.tab').forEach((t,i)=>{t.addEventListener('click',()=>{if(i===1&&!chartInst)setTimeout(()=>loadChart('5'),200);});});
-// Boot - SSE for real-time push, polling as fallback
-function startSSE(){
-  if(typeof EventSource==='undefined'){fetchFromServer();setInterval(fetchFromServer,5000);return;}
-  const es=new EventSource('/api/stream');
-  es.onmessage=function(e){
-    try{
-      const d=JSON.parse(e.data);
-      if(!d.spot||d.spot<30000){return;}
-      const prev=S.spot;
-      S.spot=d.spot;S.change=d.change;S.pct=d.pct;
-      S.high=d.high;S.low=d.low;S.open=d.open;
-      S.vwap=d.vwap||((d.high+d.low+d.spot)/3);
-      S.vix=d.vix;S.sp500chg=d.sp500_chg;S.crudechg=d.crude_chg;
-      S.goldchg=d.gold_chg;S.usdinr=d.usdinr;
-      const now=new Date(Date.now()+5.5*3600000);
-      const t=String(now.getUTCHours()).padStart(2,'0')+':'+String(now.getUTCMinutes()).padStart(2,'0');
-      const last=S.candles[S.candles.length-1];
-      if(last&&last.t===t){last.c=d.spot;last.h=Math.max(last.h,d.high||d.spot);last.l=Math.min(last.l,d.low||d.spot);}
-      else if(d.spot){S.candles.push({t,o:prev||d.spot,h:d.high||d.spot,l:d.low||d.spot,c:d.spot,v:1});}
-      if(S.candles.length>200)S.candles=S.candles.slice(-200);
-      setConn(true,d.market_open!==false,d.last_session_time||'');
-      const src=d.ws_connected?'WS LIVE':'REST';
-      setConn(true,d.market_open!==false,d.last_session_time||'');
-    log(src+' BN '+d.spot.toLocaleString('en-IN')+' VIX '+d.vix+' '+d.last_updated,true);
-      renderAll();
-    }catch(err){console.error('SSE parse',err);}
-  };
-  es.onerror=function(){es.close();fetchFromServer();setInterval(fetchFromServer,5000);};
-  setInterval(fetchFromServer,30000);
-}
-startSSE();
+// Boot
+fetchFromServer();setInterval(fetchFromServer,5000);
 
 // ═══════ UPSTOX CHART ENGINE ═══════
 var lwC=null,cSeries=null,e9S=null,e21S=null,vwS=null,curIv=5;
