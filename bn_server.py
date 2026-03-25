@@ -951,52 +951,7 @@ def refresh_candles(interval='5'):
         candle_cache["last_fetch"][str(interval)] = datetime.now().strftime("%H:%M:%S")
     return data
 
-# Candle cache
-candle_cache = {"1": [], "5": [], "15": [], "60": []}
 
-def fetch_candles(interval="5"):
-    """Fetch historical candles from Upstox for given interval in minutes."""
-    if not state["access_token"]:
-        return []
-    try:
-        from datetime import timedelta
-        interval_map = {"1":"1minute","5":"5minute","15":"15minute","60":"60minute"}
-        upstox_interval = interval_map.get(str(interval), "5minute")
-        today = date.today()
-        # For intraday use today; if weekend/after hours use last trading day
-        weekday = today.weekday()
-        if weekday == 5: today = today - timedelta(days=1)
-        elif weekday == 6: today = today - timedelta(days=2)
-        from_date = today.strftime("%Y-%m-%d")
-        to_date   = today.strftime("%Y-%m-%d")
-        url = (f"https://api.upstox.com/v2/historical-candle/intraday/"
-               f"{requests.utils.quote(BN_KEY)}/{upstox_interval}")
-        r = requests.get(url, headers=hdr(), timeout=10)
-        if r.status_code != 200:
-            print(f"[CANDLES] HTTP {r.status_code}: {r.text[:200]}")
-            return []
-        data = r.json().get("data", {}).get("candles", [])
-        # Upstox format: [timestamp, open, high, low, close, volume, oi]
-        candles = []
-        for c in data:
-            try:
-                ts = int(datetime.fromisoformat(c[0].replace("Z","+00:00")).timestamp())
-                candles.append({
-                    "time": ts,
-                    "open":   round(float(c[1]), 2),
-                    "high":   round(float(c[2]), 2),
-                    "low":    round(float(c[3]), 2),
-                    "close":  round(float(c[4]), 2),
-                    "volume": int(c[5]),
-                })
-            except: pass
-        candles.sort(key=lambda x: x["time"])
-        candle_cache[str(interval)] = candles
-        print(f"[CANDLES] {interval}m: {len(candles)} candles fetched")
-        return candles
-    except Exception as e:
-        print(f"[CANDLES] Error: {e}")
-        return []
 
 def fetch_prices():
     if not state["access_token"]:
@@ -1286,10 +1241,10 @@ def candles_debug():
         today = datetime.now(ist).strftime("%Y-%m-%d")
         yesterday = (datetime.now(ist) - timedelta(days=2)).strftime("%Y-%m-%d")
         # Try intraday
-        url1 = f"https://api.upstox.com/v2/historical-candle/intraday/{requests.utils.quote(BN_KEY)}/5minute"
+        url1 = f"https://api.upstox.com/v2/historical-candle/intraday/{requests.utils.quote(BN_KEY)}/1minute"
         r1 = requests.get(url1, headers=hdr(), timeout=10)
         # Try historical
-        url2 = f"https://api.upstox.com/v2/historical-candle/{requests.utils.quote(BN_KEY)}/5minute/{today}/{yesterday}"
+        url2 = f"https://api.upstox.com/v2/historical-candle/{requests.utils.quote(BN_KEY)}/1minute/{today}/{yesterday}"
         r2 = requests.get(url2, headers=hdr(), timeout=10)
         return jsonify({
             "intraday_status": r1.status_code,
