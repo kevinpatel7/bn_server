@@ -852,50 +852,90 @@ def fetch_globals():
         print(f"[GLOBALS] {e}")
 
 
+def resample_candles(candles_1m, target_minutes):
+    """Resample 1min candles into larger timeframes."""
+    if target_minutes == 1:
+        return candles_1m
+    resampled = []
+    bucket = []
+    for c in candles_1m:
+        bucket.append(c)
+        if len(bucket) >= target_minutes:
+            resampled.append({
+                "time":   bucket[0]["time"],
+                "open":   bucket[0]["open"],
+                "high":   max(x["high"] for x in bucket),
+                "low":    min(x["low"]  for x in bucket),
+                "close":  bucket[-1]["close"],
+                "volume": sum(x["volume"] for x in bucket),
+            })
+            bucket = []
+    if bucket:  # leftover partial candle
+        resampled.append({
+            "time":   bucket[0]["time"],
+            "open":   bucket[0]["open"],
+            "high":   max(x["high"] for x in bucket),
+            "low":    min(x["low"]  for x in bucket),
+            "close":  bucket[-1]["close"],
+            "volume": sum(x["volume"] for x in bucket),
+        })
+    return resampled
+
 def fetch_candles(interval='5'):
-    """Fetch OHLCV candle data from Upstox for the chart."""
+    """Fetch OHLCV candle data from Upstox. Always fetch 1min, resample as needed."""
     try:
         from datetime import timezone, timedelta
-        iv_map = {'1':'1minute','5':'5minute','15':'15minute','60':'60minute'}
-        iv = iv_map.get(str(interval), '5minute')
         ist = timezone(timedelta(hours=5, minutes=30))
-        today = datetime.now(ist).strftime('%Y-%m-%d')
-        # Try intraday first (today's candles)
+        today = datetime.now(timezone.utc).astimezone(ist).strftime('%Y-%m-%d')
+        yesterday = (datetime.now(timezone.utc).astimezone(ist) - timedelta(days=2)).strftime('%Y-%m-%d')
+        target_min = int({'1':1,'5':5,'15':15,'60':30}.get(str(interval), 5))
+        # Upstox only supports 1minute and 30minute
+        upstox_iv = '1minute'
+
+        raw_candles = []
+
+        # Try intraday first (market hours - today)
         url = (f"https://api.upstox.com/v2/historical-candle/intraday/"
-               f"{requests.utils.quote(BN_KEY)}/{iv}")
+               f"{requests.utils.quote(BN_KEY)}/{upstox_iv}")
         r = requests.get(url, headers=hdr(), timeout=15)
         if r.status_code == 200:
             data = r.json().get("data", {}).get("candles", [])
             if data:
-                candles = []
                 for c in data:
                     try:
                         ts = int(datetime.fromisoformat(c[0].replace('Z','+00:00')).timestamp())
-                        candles.append({"time": ts, "open": float(c[1]), "high": float(c[2]),
-                                        "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])})
+                        raw_candles.append({"time": ts, "open": float(c[1]), "high": float(c[2]),
+                                           "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])})
                     except: pass
-                candles.sort(key=lambda x: x["time"])
-                print(f"[CANDLES] Intraday: {len(candles)} candles ({iv})")
-                return candles
-        # Fallback: historical (last 2 days)
-        yesterday = (datetime.now(ist) - timedelta(days=2)).strftime('%Y-%m-%d')
-        url2 = (f"https://api.upstox.com/v2/historical-candle/"
-                f"{requests.utils.quote(BN_KEY)}/{iv}/{today}/{yesterday}")
-        r2 = requests.get(url2, headers=hdr(), timeout=15)
-        if r2.status_code == 200:
-            data2 = r2.json().get("data", {}).get("candles", [])
-            candles = []
-            for c in data2:
-                try:
-                    ts = int(datetime.fromisoformat(c[0].replace('Z','+00:00')).timestamp())
-                    candles.append({"time": ts, "open": float(c[1]), "high": float(c[2]),
-                                    "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])})
-                except: pass
-            candles.sort(key=lambda x: x["time"])
-            print(f"[CANDLES] Historical: {len(candles)} candles ({iv})")
-            return candles
-        print(f"[CANDLES] Both endpoints failed: {r.status_code}")
-        return []
+                raw_candles.sort(key=lambda x: x["time"])
+                print(f"[CANDLES] Intraday 1min: {len(raw_candles)} candles")
+
+        # Fallback: historical
+        if not raw_candles:
+            url2 = (f"https://api.upstox.com/v2/historical-candle/"
+                    f"{requests.utils.quote(BN_KEY)}/{upstox_iv}/{today}/{yesterday}")
+            r2 = requests.get(url2, headers=hdr(), timeout=15)
+            if r2.status_code == 200:
+                data2 = r2.json().get("data", {}).get("candles", [])
+                for c in data2:
+                    try:
+                        ts = int(datetime.fromisoformat(c[0].replace('Z','+00:00')).timestamp())
+                        raw_candles.append({"time": ts, "open": float(c[1]), "high": float(c[2]),
+                                           "low": float(c[3]), "close": float(c[4]), "volume": float(c[5])})
+                    except: pass
+                raw_candles.sort(key=lambda x: x["time"])
+                print(f"[CANDLES] Historical 1min: {len(raw_candles)} candles")
+            else:
+                print(f"[CANDLES] Historical failed: {r2.status_code} {r2.text[:200]}")
+
+        if not raw_candles:
+            return []
+
+        # Resample to target interval
+        result = resample_candles(raw_candles, target_min)
+        print(f"[CANDLES] Resampled to {interval}min: {len(result)} candles")
+        return result
+
     except Exception as e:
         print(f"[CANDLES] Error: {e}")
         return []
