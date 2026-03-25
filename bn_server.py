@@ -453,10 +453,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
       <div class="chart-hd">
         <span class="chart-hd-t">BANKNIFTY · UPSTOX LIVE</span>
         <div class="tf-row">
-          <button class="tf" onclick="loadChart(1)">1m</button>
-          <button class="tf on" onclick="loadChart(5)">5m</button>
-          <button class="tf" onclick="loadChart(15)">15m</button>
-          <button class="tf" onclick="loadChart(60)">1h</button>
+          <button class="tf on" onclick="loadChart(1)">1m</button>
         </div>
       </div>
       <div class="chart-body" style="position:relative">
@@ -652,7 +649,7 @@ function initChart(){
     if(leg)leg.textContent='O:'+Math.round(d.open).toLocaleString('en-IN')+'  H:'+Math.round(d.high).toLocaleString('en-IN')+'  L:'+Math.round(d.low).toLocaleString('en-IN')+'  C:'+Math.round(d.close).toLocaleString('en-IN');
   });
   window.addEventListener('resize',function(){if(lwC&&el)lwC.resize(el.clientWidth,el.clientHeight);});
-  loadChart(5);
+  loadChart(1);
 }
 
 function calcEMA(data,p){var k=2/(p+1),e=data[0].close;return data.map(function(d,i){if(i>0)e=d.close*k+e*(1-k);return{time:d.time,value:+e.toFixed(2)};});}
@@ -690,7 +687,7 @@ async function loadChart(iv){
 })();
 
 // Auto-refresh chart every 30s when chart tab open
-setInterval(function(){if(document.getElementById('page-1').classList.contains('on'))loadChart(curIv);},30000);
+setInterval(function(){if(document.getElementById('page-1').classList.contains('on'))loadChart(1);},30000);
 
 </script>
 </body>
