@@ -457,7 +457,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
         </div>
       </div>
       <div class="chart-body" style="position:relative">
-        <div id="lw_chart" style="width:100%;height:100%"></div>
+        <div id="lw_chart" style="width:100%;height:320px"></div>
         <div id="chart-loading" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--cond);font-size:13px;color:var(--muted);font-weight:700;letter-spacing:0.1em;text-align:center">LOADING...</div>
         <div id="chart-legend" style="position:absolute;top:8px;left:8px;font-size:9px;color:var(--white);background:rgba(6,10,16,0.85);padding:4px 8px;border-radius:3px;pointer-events:none;z-index:10;letter-spacing:0.05em"></div>
       </div>
@@ -521,7 +521,7 @@ let ariaKey='',ariaHist=[],prevSig=null;
 // Clock
 setInterval(()=>{const d=new Date(Date.now()+5.5*3600000);document.getElementById('clock').textContent=`${String(d.getUTCHours()).padStart(2,'0')}:${String(d.getUTCMinutes()).padStart(2,'0')}:${String(d.getUTCSeconds()).padStart(2,'0')} IST`;},1000);
 function log(m,ok=null){document.getElementById('logtxt').textContent=m;document.getElementById('logtxt').style.color=ok===true?'var(--green)':ok===false?'var(--red)':'var(--muted)';}
-function goTab(i){document.querySelectorAll('.tab').forEach((t,j)=>t.classList.toggle('on',i===j));document.querySelectorAll('.page').forEach((p,j)=>p.classList.toggle('on',i===j));}
+function goTab(i){document.querySelectorAll('.tab').forEach((t,j)=>t.classList.toggle('on',i===j));document.querySelectorAll('.page').forEach((p,j)=>p.classList.toggle('on',i===j));if(i===1){setTimeout(function(){if(!lwC){initChart();}else{loadChart(1);}},100);}}
 
 // Setup
 function showSetup(){document.getElementById('setup').classList.remove('hide');if(SERVER)document.getElementById('server-url').value=SERVER;}
@@ -631,7 +631,7 @@ function initChart(){
   var el=document.getElementById('lw_chart');
   if(!el||lwC)return;
   lwC=LightweightCharts.createChart(el,{
-    width:el.clientWidth,height:el.clientHeight||320,
+    width:el.clientWidth||window.innerWidth,height:320,
     layout:{background:{color:'#060A10'},textColor:'#4A6070'},
     grid:{vertLines:{color:'#192336'},horzLines:{color:'#192336'}},
     rightPriceScale:{borderColor:'#192336'},
