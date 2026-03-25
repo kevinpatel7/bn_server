@@ -125,11 +125,13 @@ def is_market_open():
     """Check if NSE market is currently open (IST = UTC+5:30)."""
     from datetime import timezone, timedelta
     ist = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(ist)
-    if now.weekday() >= 5:  # Saturday/Sunday
+    now = datetime.now(timezone.utc).astimezone(ist)
+    if now.weekday() >= 5:
         return False
     mins = now.hour * 60 + now.minute
-    return (9 * 60 + 15) <= mins <= (15 * 60 + 30)
+    open_ok = (9 * 60 + 15) <= mins <= (15 * 60 + 30)
+    print(f"[MARKET] IST={now.strftime('%H:%M')} weekday={now.weekday()} open={open_ok}")
+    return open_ok
 
 TERMINAL_HTML = """<!DOCTYPE html>
 <html lang="en">
