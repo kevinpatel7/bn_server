@@ -580,8 +580,9 @@ async function fetchFromServer(){
     if(S.candles.length>200)S.candles=S.candles.slice(-200);
     document.getElementById('upd-ts').textContent=d.last_updated||'—';
     setConn(true,d.market_open!==false,d.last_session_time||'');
-    log((d.using_last_session?'Last session · ':'Live · ')+'BN ₹'+d.spot.toLocaleString('en-IN')+' · VIX '+d.vix+' · '+(d.last_session_time||d.last_updated),d.using_last_session?null:true);
+    log((d.using_last_session?'Last session \u00b7 ':'Live \u00b7 ')+'BN \u20b9'+d.spot.toLocaleString('en-IN')+' \u00b7 VIX '+d.vix+' \u00b7 '+(d.last_session_time||d.last_updated),d.using_last_session?null:true);
     renderAll();
+    updateChartTick(d.spot,d.high,d.low);
   }catch(e){
     setConn(false,false,'');
     log('Server error: '+e.message,false);
@@ -619,6 +620,44 @@ async function callAria(msg){if(!ariaKey){ariaKey=prompt('Anthropic API key for 
 function addMsg(html,type){const box=document.getElementById('ai-msgs');const el=document.createElement('div');el.className='msg '+type;el.innerHTML=html;box.appendChild(el);box.scrollTop=box.scrollHeight;return el;}
 async function sendAI(){const inp=document.getElementById('ai-in');const msg=inp.value.trim();if(!msg)return;inp.value='';document.getElementById('ai-btn').disabled=true;addMsg(msg,'user');const td=addMsg('<div class="typing"><span></span><span></span><span></span></div>','bot');try{const r=await callAria(msg);td.className='msg bot';td.innerHTML=r;}catch(e){td.className='msg bot';td.innerHTML='Error: '+e.message;}document.getElementById('ai-btn').disabled=false;}
 function ariaExplain(sig){if(!sig||sig.signal==='WAIT')return;const isBuy=sig.signal==='BUY';addMsg(`${isBuy?'🟢':'🔴'} <strong>${isBuy?'BUY CALL':'BUY PUT'}</strong> — ${sig.strike} ${sig.otype} · ${sig.conf}% conf<br>Entry: ₹${sig.entry?.toLocaleString('en-IN')||'—'} · SL: ₹${sig.sl?.toLocaleString('en-IN')||'—'}`,'bot');}
+
+// Real-time chart tick update
+function updateChartTick(spot, high, low) {
+  if (!cSeries || !lwC || !spot) return;
+  try {
+    const IST_OFFSET = 19800;
+    // Get current minute timestamp in IST
+    const now = Math.floor(Date.now() / 1000) + IST_OFFSET;
+    const minuteTs = now - (now % 60);
+    // Get last candle
+    const last = window._lastCandle;
+    if (!last) return;
+    // Update current minute candle
+    const updated = {
+      time: minuteTs,
+      open: last.time === minuteTs ? last.open : spot,
+      high: last.time === minuteTs ? Math.max(last.high, high || spot) : spot,
+      low: last.time === minuteTs ? Math.min(last.low, low || spot) : spot,
+      close: spot,
+    };
+    window._lastCandle = updated;
+    cSeries.update(updated);
+    // Also update EMA/VWAP lines with new close
+    if (e9S && window._chartCandles) {
+      const candles = window._chartCandles;
+      // Replace or append current candle
+      const idx = candles.findIndex(c => c.time === minuteTs);
+      if (idx >= 0) candles[idx] = {...updated, volume: candles[idx].volume || 0};
+      else candles.push({...updated, volume: 0});
+      const ema9 = calcEMA(candles, 9);
+      const ema21 = calcEMA(candles, 21);
+      const vwap = calcVWAP(candles);
+      if (ema9.length) e9S.update(ema9[ema9.length-1]);
+      if (ema21.length) e21S.update(ema21[ema21.length-1]);
+      if (vwap.length) vwS.update(vwap[vwap.length-1]);
+    }
+  } catch(e) { /* silent */ }
+}
 
 // Boot
 fetchFromServer();setInterval(fetchFromServer,5000);
@@ -674,6 +713,8 @@ async function loadChart(iv){
       e21S.setData(calcEMA(c,21));
       vwS.setData(calcVWAP(c));
       lwC.timeScale().fitContent();
+      window._chartCandles = c.slice();
+      window._lastCandle = c[c.length-1];
     },100);
   }catch(e){if(ld)ld.textContent='Error: '+e.message;}
 }
@@ -1152,10 +1193,15 @@ def status(): return jsonify({"running": True, "authenticated": cache["authentic
 def candles_api():
     interval = request.args.get("interval", "5")
     cached = candle_cache.get(str(interval), [])
-    if not cached:
-        # Fetch on demand if not cached
-        cached = fetch_candles(interval)
-    return jsonify({"candles": cached, "interval": interval, "count": len(cached)})
+    if not cached or cache.get("market_open"):
+        fresh = fetch_candles(str(interval))
+        if fresh:
+            candle_cache[str(interval)] = fresh
+            cached = fresh
+    # Convert UTC timestamps to IST (+5:30 = +19800 seconds) for chart display
+    IST_OFFSET = 19800
+    candles_ist = [{**c, "time": c["time"] + IST_OFFSET} for c in cached]
+    return jsonify({"candles": candles_ist, "interval": interval, "count": len(candles_ist)})
 
 @app.route("/ping")
 def ping(): return "pong"
