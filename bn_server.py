@@ -51,6 +51,127 @@ cache = {
     "last_session": {},  # stores last known good market data
 }
 LAST_SESSION_FILE = "last_session.json"
+TRADES_FILE = "paper_trades.json"
+
+# Paper trading state
+paper = {
+    "capital": 100000,
+    "available": 100000,
+    "open_trade": None,
+    "trades": [],
+    "stats": {"total": 0, "wins": 0, "losses": 0, "pnl": 0}
+}
+
+def load_trades():
+    try:
+        with open(TRADES_FILE) as f:
+            data = json.load(f)
+            paper["trades"] = data.get("trades", [])
+            paper["stats"] = data.get("stats", {"total":0,"wins":0,"losses":0,"pnl":0})
+            paper["available"] = data.get("available", 100000)
+            paper["open_trade"] = data.get("open_trade", None)
+            print(f"[TRADES] Loaded {len(paper['trades'])} trades")
+    except: pass
+
+def save_trades():
+    try:
+        with open(TRADES_FILE, "w") as f:
+            json.dump({"trades": paper["trades"], "stats": paper["stats"],
+                       "available": paper["available"], "open_trade": paper["open_trade"]}, f)
+    except Exception as e:
+        print(f"[TRADES] Save error: {e}")
+
+def estimate_premium(spot, strike, otype, vix):
+    """Estimate option premium using simplified Black-Scholes."""
+    import math
+    vol = (vix or 15) / 100
+    T = 7/365  # approximate days to expiry
+    diff = abs(spot - strike)
+    intrinsic = max(0, spot - strike) if otype == "CE" else max(0, strike - spot)
+    time_val = spot * vol * math.sqrt(T) * math.exp(-diff / (spot * 0.02 + 1))
+    return round(max(0.5, intrinsic + time_val), 2)
+
+def check_exit(spot):
+    """Check if open trade should be exited."""
+    t = paper["open_trade"]
+    if not t: return
+    otype = t["otype"]
+    sl = t["sl"]
+    t1 = t["t1"]
+    t2 = t["t2"]
+    # Check SL
+    hit_sl = (otype == "CE" and spot <= sl) or (otype == "PE" and spot >= sl)
+    hit_t1 = (otype == "CE" and spot >= t1) or (otype == "PE" and spot <= t1)
+    hit_t2 = (otype == "CE" and spot >= t2) or (otype == "PE" and spot <= t2)
+    reason = None
+    exit_spot = spot
+    if hit_t2: reason = "TARGET 2 HIT"
+    elif hit_t1: reason = "TARGET 1 HIT"
+    elif hit_sl: reason = "STOP LOSS HIT"
+    if reason:
+        close_trade(exit_spot, reason)
+
+def open_trade(signal, spot, vix):
+    """Open a new paper trade based on signal."""
+    if paper["open_trade"]: return  # already in trade
+    otype = signal.get("otype", "CE")
+    strike = signal.get("strike", round(spot/100)*100)
+    sl = signal.get("sl", 0)
+    t1 = signal.get("t1", 0)
+    t2 = signal.get("t2", 0)
+    if not sl or not t1: return
+    # Calculate position size: 1% of capital = max risk
+    premium = estimate_premium(spot, strike, otype, vix)
+    sl_premium = estimate_premium(sl, strike, otype, vix)
+    risk_per_lot = abs(premium - sl_premium) * 15  # 15 qty per lot
+    max_risk = paper["capital"] * 0.01  # 1% = ₹1000
+    lots = max(1, int(max_risk / risk_per_lot)) if risk_per_lot > 0 else 1
+    lots = min(lots, 5)  # cap at 5 lots
+    cost = premium * 15 * lots
+    if cost > paper["available"]: return  # not enough capital
+    trade = {
+        "id": len(paper["trades"]) + 1,
+        "time": datetime.now().strftime("%d %b %H:%M"),
+        "signal": "BUY " + otype,
+        "strike": strike,
+        "otype": otype,
+        "entry_spot": spot,
+        "entry_premium": premium,
+        "sl": sl,
+        "t1": t1,
+        "t2": t2,
+        "lots": lots,
+        "qty": lots * 15,
+        "cost": round(cost, 2),
+        "status": "OPEN",
+        "exit_spot": None,
+        "exit_premium": None,
+        "pnl": 0,
+        "reason": None
+    }
+    paper["open_trade"] = trade
+    paper["available"] -= cost
+    print(f"[PAPER] Opened: {trade['signal']} {strike} @ ₹{premium} x {lots} lots")
+    save_trades()
+
+def close_trade(exit_spot, reason):
+    """Close the open paper trade."""
+    t = paper["open_trade"]
+    if not t: return
+    exit_premium = estimate_premium(exit_spot, t["strike"], t["otype"], cache.get("vix", 15))
+    pnl = round((exit_premium - t["entry_premium"]) * t["qty"], 2)
+    t.update({"status": "CLOSED", "exit_spot": exit_spot,
+               "exit_premium": exit_premium, "pnl": pnl, "reason": reason,
+               "exit_time": datetime.now().strftime("%d %b %H:%M")})
+    paper["trades"].insert(0, t)
+    paper["open_trade"] = None
+    paper["available"] += t["cost"] + pnl
+    paper["stats"]["total"] += 1
+    paper["stats"]["pnl"] = round(paper["stats"]["pnl"] + pnl, 2)
+    if pnl >= 0: paper["stats"]["wins"] += 1
+    else: paper["stats"]["losses"] += 1
+    print(f"[PAPER] Closed: {reason} | P&L ₹{pnl:+,.0f}")
+    save_trades()
 
 # WebSocket state
 ws_state = {
@@ -392,6 +513,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
   <div class="tab"    onclick="goTab(1)">📈 CHART</div>
   <div class="tab"    onclick="goTab(2)">⛓ LEVELS</div>
   <div class="tab"    onclick="goTab(3)">🤖 ARIA</div>
+  <div class="tab"    onclick="goTab(4)">📋 TRADES</div>
 </div>
 
 <!-- PAGES -->
@@ -505,6 +627,35 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
     </div>
   </div>
 
+
+  <!-- PAGE 4: TRADES -->
+  <div class="page" id="page-4">
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
+      <div class="mi"><div class="mi-l">Capital</div><div class="mi-v" style="color:var(--white);font-size:16px">&#8377;1,00,000</div></div>
+      <div class="mi"><div class="mi-l">Available</div><div id="pt-avail" class="mi-v" style="color:var(--teal);font-size:16px">-</div></div>
+      <div class="mi"><div class="mi-l">Total P&L</div><div id="pt-pnl" class="mi-v" style="font-size:16px">-</div></div>
+      <div class="mi"><div class="mi-l">Win Rate</div><div id="pt-wr" class="mi-v" style="color:var(--green);font-size:16px">-</div></div>
+    </div>
+    <div class="card">
+      <div class="card-hd">OPEN POSITION<span id="pt-open-time" style="font-weight:400;color:var(--muted)"></span></div>
+      <div id="pt-open-body" style="padding:14px">
+        <div style="text-align:center;color:var(--muted);font-size:10px;padding:10px">No open position</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button onclick="manualClose()" style="flex:1;padding:10px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:14px;font-weight:800;cursor:pointer;border-radius:4px">CLOSE TRADE</button>
+      <button onclick="resetAccount()" style="padding:10px 16px;background:var(--dim);color:var(--muted);border:1px solid var(--bdr);font-family:var(--cond);font-size:12px;font-weight:800;cursor:pointer;border-radius:4px">RESET</button>
+    </div>
+    <div class="card">
+      <div class="card-hd">TRADE HISTORY<span id="pt-count" style="font-weight:400;color:var(--muted)">0 trades</span></div>
+      <div id="pt-history" style="max-height:300px;overflow-y:auto">
+        <div style="text-align:center;color:var(--muted);font-size:10px;padding:20px">No trades yet</div>
+      </div>
+    </div>
+    <div style="background:rgba(0,191,165,0.06);border:1px solid rgba(0,191,165,0.2);border-radius:5px;padding:10px 14px;font-size:9px;color:var(--teal);line-height:1.8">
+      Auto-trades on every BUY/SELL signal | 1% risk per trade | Auto-exit on SL or Target | Paper money only
+    </div>
+  </div>
 </div>
 </div>
 
@@ -599,7 +750,7 @@ function buildOC(spot){const atm=Math.round(spot/100)*100;const strikes=[];for(l
 function computeTrend(cs,spot){if(cs.length<3)return null;const cl=cs.map(c=>c.c);const e9=ema(cl,9),e21=ema(cl,21),rs=rsi(cl,14),vw=vwapCalc(cs),st=supertrend(cs);const slope=(cl[cl.length-1]-cl[Math.max(0,cl.length-6)])/6;const bf=[['Above VWAP',spot>vw],['EMA9>EMA21',e9>e21],['Supertrend Bull',st.bull],['RSI>52',rs>52],['Trending Up',slope>5],['S&P+',S.sp500chg>0],['VIX<16',S.vix<16||S.vix===0],['Above Open',S.open>0&&spot>S.open]];const brf=[['Below VWAP',spot<vw],['EMA9<EMA21',e9<e21],['Supertrend Bear',!st.bull],['RSI<48',rs<48],['Trending Down',slope<-5],['S&P−',S.sp500chg<0],['VIX>18',S.vix>18],['Below Open',S.open>0&&spot<S.open]];const bs=bf.filter(f=>f[1]).length,br=brf.filter(f=>f[1]).length,net=bs-br;let label,col,strat;if(net>=5){label='STRONGLY BULLISH';col='var(--green)';strat='Buy dips — target R2/R3';}else if(net>=3){label='BULLISH';col='#66BB6A';strat='Buy pullbacks — SL below EMA9';}else if(net>=1){label='MILDLY BULLISH';col='var(--teal)';strat='Cautious CE only';}else if(net>=-1){label='SIDEWAYS';col='var(--yellow)';strat='Avoid — wait for breakout';}else if(net>=-3){label='MILDLY BEARISH';col='#FFA040';strat='Cautious PE only';}else if(net>=-5){label='BEARISH';col='#FF7043';strat='Sell rallies to VWAP';}else{label='STRONGLY BEARISH';col='var(--red)';strat='Sell all rallies — no long trades';}return{label,col,pct:Math.round(bs/8*100),strat,bs,br,factors:bf.filter(f=>f[1]).map(f=>f[0]).join(' · ')||'—',meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st}};}
 function computeSignal(cs,spot){if(cs.length<4){const piv=calcPivots([]);const atm=Math.round(spot/100)*100;return{signal:'WAIT',conf:0,gate:'Collecting candle data...',strike:atm,otype:'-',entry:null,sl:null,t1:piv.R1,t2:piv.R2,t3:piv.R3,pivots:piv,cl:{},bs:0,br:0,meta:{e9:0,e21:0,rsi:50,vwap:S.vwap,st:{bull:S.change>=0}}};}const cl=cs.map(c=>c.c);const e9=ema(cl,9),e21=ema(cl,21),rs=rsi(cl,14),vw=vwapCalc(cs),st=supertrend(cs),piv=calcPivots(cs);const slope=(cl[cl.length-1]-cl[Math.max(0,cl.length-6)])/6;const ist=new Date(Date.now()+5.5*3600000);const hh=ist.getUTCHours(),mm=ist.getUTCMinutes();const bull={'Price>VWAP':spot>vw,'EMA9>EMA21':e9>e21,'Supertrend Bull':st.bull,'RSI 45-68':rs>=45&&rs<=68,'Momentum Up':slope>3,'VIX Safe':S.vix<20||S.vix===0,'PCR>0.9':S.pcr>0.9,'RSI>50':rs>50};const bear={'Price<VWAP':spot<vw,'EMA9<EMA21':e9<e21,'Supertrend Bear':!st.bull,'RSI 32-55':rs>=32&&rs<=55,'Momentum Down':slope<-3,'VIX Safe':S.vix<20||S.vix===0,'PCR<1.0':S.pcr<1.0,'RSI<50':rs<50};const bs=Object.values(bull).filter(Boolean).length,br=Object.values(bear).filter(Boolean).length;let raw,conds;if(bs>=6){raw='BUY';conds=bull;}else if(br>=6){raw='SELL';conds=bear;}else if(bs>=5){raw='BUY';conds=bull;}else if(br>=5){raw='SELL';conds=bear;}else{raw='WAIT';conds=bs>=br?bull:bear;}const score=raw==='BUY'?bs:raw==='SELL'?br:Math.max(bs,br);const conf=raw==='WAIT'?Math.round(score/8*100):Math.min(95,60+score*5);const tooEarly=(hh<9)||(hh===9&&mm<30),tooLate=(hh>15)||(hh===15&&mm>0);let gate=null;if(tooEarly)gate='9:30 AM not cleared';else if(tooLate)gate='Market closed';else if(S.vix>22)gate='VIX too high';else if(conf<60&&raw!=='WAIT')gate='Confidence too low ('+conf+'%)';const sig=gate?'WAIT':raw;const atm=Math.round(spot/100)*100;return{signal:sig,raw,conf,score,gate,strike:atm,otype:sig==='BUY'?'CE':sig==='SELL'?'PE':'-',entry:sig==='BUY'?piv.R1:sig==='SELL'?piv.S1:null,sl:sig==='BUY'?piv.S1:sig==='SELL'?piv.R1:null,t1:sig==='BUY'?piv.R1:sig==='SELL'?piv.S1:null,t2:sig==='BUY'?piv.R2:sig==='SELL'?piv.S2:null,t3:sig==='BUY'?piv.R3:sig==='SELL'?piv.S3:null,pivots:piv,cl:conds,bs,br,meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st}};}
 
-function renderAll(){if(!S.spot)return;const f=n=>Math.round(n).toLocaleString('en-IN');const cc=n=>n>=0?'up':'dn';const fp=n=>(n>=0?'+':'')+n.toFixed(2)+'%';const el=document.getElementById('spot-big');el.textContent='₹'+f(S.spot);el.className=cc(S.change);el.style.fontFamily='var(--cond)';el.style.fontSize='32px';el.style.fontWeight='900';document.getElementById('chg').textContent=(S.change>=0?'▲':'▼')+Math.abs(S.change).toFixed(2)+' ('+Math.abs(S.pct).toFixed(2)+'%)';document.getElementById('chg').className=cc(S.change);document.getElementById('d-o').textContent=f(S.open);document.getElementById('d-h').textContent=f(S.high);document.getElementById('d-l').textContent=f(S.low);document.getElementById('d-vw').textContent=f(S.vwap);document.getElementById('g-vix').textContent=S.vix?S.vix.toFixed(1):'—';document.getElementById('g-vix').className='g-v '+(S.vix>20?'dn':S.vix>15?'neu':'up');document.getElementById('g-pcr').textContent=S.pcr.toFixed(2);document.getElementById('g-pcr').className='g-v '+(S.pcr>=1.2?'up':S.pcr>=0.9?'neu':'dn');['g-sp','g-cr','g-gd'].forEach((id,i)=>{const v=[S.sp500chg,S.crudechg,S.goldchg][i];document.getElementById(id).textContent=v?fp(v):'—';document.getElementById(id).className='g-v '+cc(v);});document.getElementById('g-usd').textContent=S.usdinr?S.usdinr.toFixed(1):'—';const oc=buildOC(S.spot);renderOC(oc);renderMinis(oc);const t=computeTrend(S.candles,S.spot);renderTrend(t);const sig=computeSignal(S.candles,S.spot);S.signal=sig;renderSignal(sig);renderInds(sig?.meta||t?.meta);renderSR(sig?.pivots,S.spot);if(prevSig&&prevSig!=='WAIT'&&sig?.signal!==prevSig&&sig?.signal!=='WAIT')toast('Signal: '+prevSig+' → '+sig.signal);if((!prevSig||prevSig==='WAIT')&&sig?.signal!=='WAIT'){ariaExplain(sig);goTab(0);}prevSig=sig?.signal;}
+function renderAll(){if(!S.spot)return;const f=n=>Math.round(n).toLocaleString('en-IN');const cc=n=>n>=0?'up':'dn';const fp=n=>(n>=0?'+':'')+n.toFixed(2)+'%';const el=document.getElementById('spot-big');el.textContent='₹'+f(S.spot);el.className=cc(S.change);el.style.fontFamily='var(--cond)';el.style.fontSize='32px';el.style.fontWeight='900';document.getElementById('chg').textContent=(S.change>=0?'▲':'▼')+Math.abs(S.change).toFixed(2)+' ('+Math.abs(S.pct).toFixed(2)+'%)';document.getElementById('chg').className=cc(S.change);document.getElementById('d-o').textContent=f(S.open);document.getElementById('d-h').textContent=f(S.high);document.getElementById('d-l').textContent=f(S.low);document.getElementById('d-vw').textContent=f(S.vwap);document.getElementById('g-vix').textContent=S.vix?S.vix.toFixed(1):'—';document.getElementById('g-vix').className='g-v '+(S.vix>20?'dn':S.vix>15?'neu':'up');document.getElementById('g-pcr').textContent=S.pcr.toFixed(2);document.getElementById('g-pcr').className='g-v '+(S.pcr>=1.2?'up':S.pcr>=0.9?'neu':'dn');['g-sp','g-cr','g-gd'].forEach((id,i)=>{const v=[S.sp500chg,S.crudechg,S.goldchg][i];document.getElementById(id).textContent=v?fp(v):'—';document.getElementById(id).className='g-v '+cc(v);});document.getElementById('g-usd').textContent=S.usdinr?S.usdinr.toFixed(1):'—';const oc=buildOC(S.spot);renderOC(oc);renderMinis(oc);const t=computeTrend(S.candles,S.spot);renderTrend(t);const sig=computeSignal(S.candles,S.spot);S.signal=sig;renderSignal(sig);checkPaperTrade(sig);renderInds(sig?.meta||t?.meta);renderSR(sig?.pivots,S.spot);if(prevSig&&prevSig!=='WAIT'&&sig?.signal!==prevSig&&sig?.signal!=='WAIT')toast('Signal: '+prevSig+' → '+sig.signal);if((!prevSig||prevSig==='WAIT')&&sig?.signal!=='WAIT'){ariaExplain(sig);goTab(0);}prevSig=sig?.signal;}
 
 function renderTrend(t){if(!t){document.getElementById('tl').textContent=S.candles.length<3?'Collecting...':'—';return;}document.getElementById('tl').textContent=t.label;document.getElementById('tl').style.color=t.col;document.getElementById('tf2').style.width=t.pct+'%';document.getElementById('tf2').style.background=t.col;document.getElementById('t-fac').textContent='Bull '+t.bs+'/8 · Bear '+t.br+'/8 · '+t.factors;document.getElementById('t-str').textContent=t.strat;document.getElementById('t-str').style.background=t.col+'22';document.getElementById('t-str').style.color=t.col;}
 function renderSignal(sig){const body=document.getElementById('sig-body');const ist=new Date(Date.now()+5.5*3600000);document.getElementById('sig-ts').textContent=`${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')} IST`;if(!sig||sig.signal==='WAIT'){const m=sig?.gate||(sig?`Bull ${sig.bs}/8 · Bear ${sig.br}/8`:'Waiting...');body.innerHTML=`<div class="sw"><div style="font-size:32px;margin-bottom:6px">⏸</div><div class="sw-t">WAIT</div><div class="sw-m">${m}${sig&&sig.bs+sig.br>0?`<br><br><span style="color:var(--dim)">Bull: ${sig.bs}/8 · Bear: ${sig.br}/8 · Conf: ${sig.conf}%</span>`:''}</div></div>`;return;}const isBuy=sig.signal==='BUY';const col=isBuy?'var(--green)':'var(--red)';const bg=isBuy?'rgba(0,230,118,0.04)':'rgba(255,23,68,0.04)';const f=n=>n?Math.round(n).toLocaleString('en-IN'):'—';const conds=Object.entries(sig.cl);const met=conds.filter(([,v])=>v).length;body.innerHTML=`<div class="sig-ac" style="background:${bg}"><div class="sv" style="color:${col}">${isBuy?'BUY CALL':'BUY PUT'}</div><div class="ss" style="color:${col}">${isBuy?'BULLISH':'BEARISH'} SETUP</div><div class="sb" style="background:${col}18;color:${col};border:1px solid ${col}44">${sig.strike} ${sig.otype} · WEEKLY</div></div><div class="lg"><div class="lc" style="border-color:var(--teal)"><div class="lc-l">ENTRY</div><div class="lc-v" style="color:var(--teal)">₹${f(sig.entry)}</div></div><div class="lc" style="border-color:var(--red)"><div class="lc-l">STOP LOSS</div><div class="lc-v" style="color:var(--red)">₹${f(sig.sl)}</div></div><div class="lc" style="border-color:var(--green)"><div class="lc-l">TARGET 1</div><div class="lc-v" style="color:var(--green)">₹${f(sig.t1)}</div></div><div class="lc" style="border-color:var(--yellow)"><div class="lc-l">TARGET 2</div><div class="lc-v" style="color:var(--yellow)">₹${f(sig.t2)}</div></div></div><div class="cr"><span style="font-size:9px;color:var(--muted);flex-shrink:0">CONFIDENCE</span><div class="cb"><div class="cf" style="width:${sig.conf}%;background:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'}"></div></div><span style="font-size:15px;font-weight:900;font-family:var(--cond);color:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'};flex-shrink:0">${sig.conf}%</span><span style="font-size:9px;color:var(--muted);flex-shrink:0">${met}/${conds.length}</span></div><div class="cds">${conds.map(([k,v])=>`<span class="cd" style="background:${v?'rgba(0,230,118,0.1)':'rgba(74,96,112,0.15)'};color:${v?'var(--green)':'var(--muted)'}">${v?'✓':'✗'} ${k}</span>`).join('')}</div><div class="sig-foot">⚠ Exit if BN ${isBuy?'closes below':'closes above'} ₹${f(sig.sl)} · T3: ₹${f(sig.t3)}</div>`;}
@@ -729,6 +880,111 @@ async function loadChart(iv){
 
 // Auto-refresh chart every 30s when chart tab open
 setInterval(function(){if(document.getElementById('page-1').classList.contains('on'))loadChart(1);},30000);
+
+
+// PAPER TRADING ENGINE
+let lastSignalFired = null;
+
+async function fetchTrades(){
+  try{
+    const res = await fetch('/api/trades');
+    const d = await res.json();
+    renderTrades(d);
+  }catch(e){}
+}
+
+function renderTrades(d){
+  if(!d) return;
+  const f = n => Math.round(Math.abs(n||0)).toLocaleString('en-IN');
+  const fp = n => (n>=0?'+':'-') + '₹' + f(n);
+  const fc = n => n>=0?'var(--green)':'var(--red)';
+
+  const availEl = document.getElementById('pt-avail');
+  const pnlEl = document.getElementById('pt-pnl');
+  const wrEl = document.getElementById('pt-wr');
+  const cntEl = document.getElementById('pt-count');
+  if(availEl) availEl.textContent = '₹' + f(d.available);
+  if(pnlEl){ pnlEl.textContent = fp(d.stats.pnl); pnlEl.style.color = fc(d.stats.pnl); }
+  const wr = d.stats.total > 0 ? Math.round(d.stats.wins/d.stats.total*100) : 0;
+  if(wrEl){ wrEl.textContent = wr + '%'; wrEl.style.color = wr>=55?'var(--green)':wr>=45?'var(--yellow)':'var(--red)'; }
+  if(cntEl) cntEl.textContent = d.stats.total + ' trades';
+
+  const body = document.getElementById('pt-open-body');
+  const timeEl = document.getElementById('pt-open-time');
+  if(body){
+    if(d.open_trade){
+      const t = d.open_trade;
+      const isBuy = t.otype === 'CE';
+      const col = isBuy ? 'var(--green)' : 'var(--red)';
+      const lp = d.live_pnl || 0;
+      if(timeEl) timeEl.textContent = ' | ' + t.time;
+      body.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--bdr)">'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div style="font-size:7px;color:var(--muted)">SIGNAL</div><div style="font-family:var(--cond);font-size:22px;font-weight:900;color:'+col+'">'+(isBuy?'BUY CALL':'BUY PUT')+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div style="font-size:7px;color:var(--muted)">STRIKE</div><div style="font-family:var(--cond);font-size:22px;font-weight:900">'+t.strike.toLocaleString('en-IN')+' '+t.otype+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div style="font-size:7px;color:var(--muted)">ENTRY PREMIUM</div><div style="font-family:var(--cond);font-size:18px;font-weight:900">₹'+t.entry_premium+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div style="font-size:7px;color:var(--muted)">LIVE P&L</div><div style="font-family:var(--cond);font-size:18px;font-weight:900;color:'+fc(lp)+'">'+fp(lp)+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div style="font-size:7px;color:var(--muted)">LOTS / QTY</div><div style="font-family:var(--cond);font-size:18px;font-weight:900">'+t.lots+' lot / '+t.qty+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div style="font-size:7px;color:var(--muted)">ENTRY SPOT</div><div style="font-family:var(--cond);font-size:18px;font-weight:900">₹'+t.entry_spot.toLocaleString('en-IN')+'</div></div>'
+        + '</div>'
+        + '<div style="display:flex;gap:1px;background:var(--bdr);margin-top:1px">'
+        + '<div style="flex:1;background:var(--bg2);padding:8px 12px;border-left:3px solid var(--red)"><div style="font-size:7px;color:var(--muted)">STOP LOSS</div><div style="font-family:var(--cond);font-size:16px;font-weight:900;color:var(--red)">₹'+t.sl.toLocaleString('en-IN')+'</div></div>'
+        + '<div style="flex:1;background:var(--bg2);padding:8px 12px;border-left:3px solid var(--teal)"><div style="font-size:7px;color:var(--muted)">TARGET 1</div><div style="font-family:var(--cond);font-size:16px;font-weight:900;color:var(--teal)">₹'+t.t1.toLocaleString('en-IN')+'</div></div>'
+        + '<div style="flex:1;background:var(--bg2);padding:8px 12px;border-left:3px solid var(--green)"><div style="font-size:7px;color:var(--muted)">TARGET 2</div><div style="font-family:var(--cond);font-size:16px;font-weight:900;color:var(--green)">₹'+t.t2.toLocaleString('en-IN')+'</div></div>'
+        + '</div>';
+    } else {
+      if(timeEl) timeEl.textContent = '';
+      body.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position — waiting for signal</div>';
+    }
+  }
+
+  const hist = document.getElementById('pt-history');
+  if(hist){
+    if(!d.trades || !d.trades.length){
+      hist.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:20px">No trades yet</div>';
+    } else {
+      hist.innerHTML = d.trades.map(function(t){
+        const isBuy = t.otype==='CE';
+        const col = t.pnl>=0?'var(--green)':'var(--red)';
+        const bg = t.pnl>=0?'rgba(0,230,118,0.05)':'rgba(255,23,68,0.05)';
+        return '<div style="padding:10px 12px;border-bottom:1px solid var(--bdr);background:'+bg+'">'
+          + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">'
+          + '<span style="font-family:var(--cond);font-size:13px;font-weight:900;color:'+(isBuy?'var(--green)':'var(--red)')+'">'+  (isBuy?'BUY CALL':'BUY PUT')+' '+t.strike+'</span>'
+          + '<span style="font-family:var(--cond);font-size:15px;font-weight:900;color:'+col+'">'+fp(t.pnl)+'</span>'
+          + '</div>'
+          + '<div style="font-size:8px;color:var(--muted)">'+t.time+' → '+(t.exit_time||'-')+' · '+t.lots+' lot · Entry ₹'+t.entry_premium+' → ₹'+(t.exit_premium||'-')+' · <span style="color:'+col+'">'+t.reason+'</span></div>'
+          + '</div>';
+      }).join('');
+    }
+  }
+}
+
+async function manualClose(){
+  if(!confirm('Close open trade now?')) return;
+  await fetch('/api/trades/close', {method:'POST'});
+  fetchTrades();
+}
+
+async function resetAccount(){
+  if(!confirm('Reset all trades and start fresh with \u20b91,00,000?')) return;
+  await fetch('/api/trades/reset', {method:'POST'});
+  fetchTrades();
+}
+
+function checkPaperTrade(sig){
+  if(!sig || sig.signal==='WAIT') return;
+  const key = sig.signal+'_'+sig.strike+'_'+sig.conf;
+  if(key === lastSignalFired) return;
+  if(sig.conf >= 60){
+    lastSignalFired = key;
+    fetch('/api/trades/signal', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({signal:sig.signal, otype:sig.otype, strike:sig.strike, sl:sig.sl, t1:sig.t1, t2:sig.t2, conf:sig.conf})
+    }).then(function(){fetchTrades(); toast('Paper trade opened: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike);});
+  }
+}
+
+setInterval(fetchTrades, 5000);
+fetchTrades();
 
 </script>
 </body>
@@ -985,6 +1241,9 @@ def fetch_prices():
         fetch_globals()
         cache["market_open"] = True
         save_last_session()
+        # Check paper trade exits on every price update
+        if paper["open_trade"] and spot:
+            check_exit(spot)
         # Refresh candles every fetch cycle
         threading.Thread(target=refresh_candles, args=("5",), daemon=True).start()
         print(f"[{cache['last_updated']}] BN ₹{spot:,.0f} | VIX {cache['vix']} | PCR {cache['pcr']}")
@@ -1206,6 +1465,52 @@ def candles_api():
 @app.route("/ping")
 def ping(): return "pong"
 
+@app.route("/api/trades")
+def trades_api():
+    spot = cache.get("spot", 0)
+    open_t = paper["open_trade"]
+    live_pnl = 0
+    if open_t and spot:
+        curr_prem = estimate_premium(spot, open_t["strike"], open_t["otype"], cache.get("vix",15))
+        live_pnl = round((curr_prem - open_t["entry_premium"]) * open_t["qty"], 2)
+    return jsonify({
+        "capital": paper["capital"],
+        "available": round(paper["available"], 2),
+        "open_trade": open_t,
+        "live_pnl": live_pnl,
+        "trades": paper["trades"][:50],
+        "stats": paper["stats"]
+    })
+
+@app.route("/api/trades/signal", methods=["POST"])
+def trades_signal():
+    """Called when a new signal fires — open a paper trade."""
+    data = request.json or {}
+    sig = data.get("signal")
+    spot = cache.get("spot", 0)
+    vix = cache.get("vix", 15)
+    if sig in ("BUY", "SELL") and spot:
+        open_trade(data, spot, vix)
+    return jsonify({"ok": True})
+
+@app.route("/api/trades/close", methods=["POST"])
+def trades_close():
+    """Manually close open trade."""
+    spot = cache.get("spot", 0)
+    close_trade(spot, "MANUAL CLOSE")
+    return jsonify({"ok": True})
+
+@app.route("/api/trades/reset", methods=["POST"])
+def trades_reset():
+    """Reset paper trading account."""
+    paper["capital"] = 100000
+    paper["available"] = 100000
+    paper["open_trade"] = None
+    paper["trades"] = []
+    paper["stats"] = {"total":0,"wins":0,"losses":0,"pnl":0}
+    save_trades()
+    return jsonify({"ok": True})
+
 @app.route("/api/stream")
 def stream():
     """SSE endpoint - browser connects here for real-time push updates."""
@@ -1270,6 +1575,7 @@ if __name__ == "__main__":
     print("=" * 50)
     load_token()
     load_last_session()
+    load_trades()
     if cache["authenticated"]:
         if is_market_open():
             print("Market open — fetching live prices...")
