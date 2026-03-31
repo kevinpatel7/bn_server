@@ -59,7 +59,18 @@ paper = {
     "available": 100000,
     "open_trade": None,
     "trades": [],
-    "stats": {"total": 0, "wins": 0, "losses": 0, "pnl": 0}
+    "stats": {"total": 0, "wins": 0, "losses": 0, "pnl": 0},
+    "daily": {"date": "", "trades": 0, "pnl": 0, "last_trade_time": 0}
+}
+
+# Trading rules
+RULES = {
+    "max_trades_per_day": 3,
+    "max_daily_loss": 3000,
+    "no_trade_before": (9, 30),   # 9:30 AM IST
+    "no_trade_after": (14, 30),   # 2:30 PM IST
+    "min_gap_minutes": 15,         # min 15 min between trades
+    "min_confidence": 60,
 }
 
 def load_trades():
@@ -114,19 +125,63 @@ def check_exit(spot):
 def open_trade(signal, spot, vix):
     """Open a new paper trade based on signal."""
     if paper["open_trade"]: return  # already in trade
+
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(timezone.utc).astimezone(ist)
+    today_str = now.strftime("%Y-%m-%d")
+
+    # Reset daily counters if new day
+    if paper["daily"]["date"] != today_str:
+        paper["daily"] = {"date": today_str, "trades": 0, "pnl": 0, "last_trade_time": 0}
+
+    # Rule: max trades per day
+    if paper["daily"]["trades"] >= RULES["max_trades_per_day"]:
+        print(f"[PAPER] Max trades ({RULES['max_trades_per_day']}) reached for today")
+        return
+
+    # Rule: max daily loss
+    if paper["daily"]["pnl"] <= -RULES["max_daily_loss"]:
+        print(f"[PAPER] Daily loss limit hit: ₹{paper['daily']['pnl']:,.0f}")
+        return
+
+    # Rule: trading hours
+    cur_mins = now.hour * 60 + now.minute
+    start_mins = RULES["no_trade_before"][0] * 60 + RULES["no_trade_before"][1]
+    end_mins = RULES["no_trade_after"][0] * 60 + RULES["no_trade_after"][1]
+    if cur_mins < start_mins:
+        print(f"[PAPER] Too early — before {RULES['no_trade_before'][0]}:{RULES['no_trade_before'][1]:02d} IST")
+        return
+    if cur_mins > end_mins:
+        print(f"[PAPER] Too late — after {RULES['no_trade_after'][0]}:{RULES['no_trade_after'][1]:02d} IST")
+        return
+
+    # Rule: min gap between trades
+    elapsed = time.time() - paper["daily"]["last_trade_time"]
+    if paper["daily"]["last_trade_time"] > 0 and elapsed < RULES["min_gap_minutes"] * 60:
+        wait = int((RULES["min_gap_minutes"] * 60 - elapsed) / 60)
+        print(f"[PAPER] Too soon — wait {wait} more minutes")
+        return
     otype = signal.get("otype", "CE")
     strike = signal.get("strike", round(spot/100)*100)
     sl = signal.get("sl", 0)
     t1 = signal.get("t1", 0)
     t2 = signal.get("t2", 0)
     if not sl or not t1: return
-    # Calculate position size: 1% of capital = max risk
+    # VIX-adjusted position sizing
+    # High VIX = smaller position, low VIX = normal position
+    vix_factor = 1.0
+    if vix > 25: vix_factor = 0.5    # Half size in very volatile market
+    elif vix > 20: vix_factor = 0.7  # 70% size in elevated VIX
+    elif vix < 14: vix_factor = 1.2  # 120% size in calm market
+
     premium = estimate_premium(spot, strike, otype, vix)
     sl_premium = estimate_premium(sl, strike, otype, vix)
     risk_per_lot = abs(premium - sl_premium) * 15  # 15 qty per lot
-    max_risk = paper["capital"] * 0.01  # 1% = ₹1000
+    max_risk = paper["capital"] * 0.01 * vix_factor  # 1% of capital × VIX factor
     lots = max(1, int(max_risk / risk_per_lot)) if risk_per_lot > 0 else 1
     lots = min(lots, 5)  # cap at 5 lots
+    print(f"[PAPER] VIX={vix} factor={vix_factor} max_risk=₹{max_risk:.0f} lots={lots}")
     cost = premium * 15 * lots
     if cost > paper["available"]: return  # not enough capital
     trade = {
@@ -151,7 +206,9 @@ def open_trade(signal, spot, vix):
     }
     paper["open_trade"] = trade
     paper["available"] -= cost
-    print(f"[PAPER] Opened: {trade['signal']} {strike} @ ₹{premium} x {lots} lots")
+    paper["daily"]["trades"] += 1
+    paper["daily"]["last_trade_time"] = time.time()
+    print(f"[PAPER] Opened: {trade['signal']} {strike} @ ₹{premium} x {lots} lots | Trade {paper['daily']['trades']}/{RULES['max_trades_per_day']} today")
     save_trades()
 
 def close_trade(exit_spot, reason):
@@ -170,7 +227,8 @@ def close_trade(exit_spot, reason):
     paper["stats"]["pnl"] = round(paper["stats"]["pnl"] + pnl, 2)
     if pnl >= 0: paper["stats"]["wins"] += 1
     else: paper["stats"]["losses"] += 1
-    print(f"[PAPER] Closed: {reason} | P&L ₹{pnl:+,.0f}")
+    paper["daily"]["pnl"] = round(paper["daily"]["pnl"] + pnl, 2)
+    print(f"[PAPER] Closed: {reason} | P&L ₹{pnl:+,.0f} | Daily P&L ₹{paper['daily']['pnl']:+,.0f}")
     save_trades()
 
 # WebSocket state
@@ -652,8 +710,9 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
         <div style="text-align:center;color:var(--muted);font-size:10px;padding:20px">No trades yet</div>
       </div>
     </div>
+    <div id="pt-daily" style="border:1px solid rgba(0,191,165,0.2);border-radius:5px;padding:8px 14px;font-size:9px;line-height:1.8;font-weight:700;letter-spacing:0.05em"></div>
     <div style="background:rgba(0,191,165,0.06);border:1px solid rgba(0,191,165,0.2);border-radius:5px;padding:10px 14px;font-size:9px;color:var(--teal);line-height:1.8">
-      Auto-trades on every BUY/SELL signal | 1% risk per trade | Auto-exit on SL or Target | Paper money only
+      Rules: Max 3 trades/day | Stop if -3000 daily loss | Trade 9:30-14:30 IST | 15min gap between trades
     </div>
   </div>
 </div>
@@ -747,13 +806,193 @@ function vwapCalc(cs){return cs.reduce((a,c)=>a+(c.h+c.l+c.c)/3,0)/cs.length;}
 function supertrend(cs,aP=10,f=3){if(cs.length<aP+1)return{bull:S.change>=0};const atrs=[];for(let i=1;i<cs.length;i++)atrs.push(Math.max(cs[i].h-cs[i].l,Math.abs(cs[i].h-cs[i-1].c),Math.abs(cs[i].l-cs[i-1].c)));const atr=atrs.slice(-aP).reduce((a,b)=>a+b,0)/aP;const last=cs[cs.length-1];const mid=(last.h+last.l)/2;return{bull:last.c>mid-f*atr};}
 function calcPivots(cs){const H=cs.length?Math.max(...cs.map(c=>c.h)):S.high||S.spot;const L=cs.length?Math.min(...cs.map(c=>c.l)):S.low||S.spot;const C=cs.length?cs[cs.length-1].c:S.spot;const p=(H+L+C)/3;return{P:+p.toFixed(0),R1:+(2*p-L).toFixed(0),R2:+(p+H-L).toFixed(0),R3:+(H+2*(p-L)).toFixed(0),S1:+(2*p-H).toFixed(0),S2:+(p-(H-L)).toFixed(0),S3:+(L-2*(H-p)).toFixed(0)};}
 function buildOC(spot){const atm=Math.round(spot/100)*100;const strikes=[];for(let i=-6;i<=6;i++)strikes.push(atm+i*100);const ce={},pe={};let totCE=0,totPE=0;const vol=(S.vix||14)/100*Math.sqrt(7/365);for(const s of strikes){const absd=Math.abs(s-spot),isATM=absd<50;const tP=spot*vol*Math.exp(-absd/(spot*0.015+1))*100;ce[s]={ltp:+(Math.max(0.5,Math.max(0,spot-s)+tP).toFixed(1)),oi:Math.round((isATM?500:Math.max(15,500-absd*0.8))*1000),oiChg:+(Math.random()*6-1.5).toFixed(1)};pe[s]={ltp:+(Math.max(0.5,Math.max(0,s-spot)+tP).toFixed(1)),oi:Math.round((isATM?480:Math.max(15,480-absd*0.75))*1000),oiChg:+(Math.random()*6-1.5).toFixed(1)};totCE+=ce[s].oi;totPE+=pe[s].oi;}let maxPain=atm,minLoss=Infinity;for(const s of strikes){let loss=0;for(const ss of strikes){loss+=Math.max(0,ss-s)*(ce[ss]?.oi||0)+Math.max(0,s-ss)*(pe[ss]?.oi||0);}if(loss<minLoss){minLoss=loss;maxPain=s;}}const pcr=+(totPE/totCE).toFixed(2);S.pcr=pcr;S.maxPain=maxPain;S.totCE=totCE;S.totPE=totPE;return{strikes,ce,pe,pcr,maxPain,totCE,totPE};}
-function computeTrend(cs,spot){if(cs.length<3)return null;const cl=cs.map(c=>c.c);const e9=ema(cl,9),e21=ema(cl,21),rs=rsi(cl,14),vw=vwapCalc(cs),st=supertrend(cs);const slope=(cl[cl.length-1]-cl[Math.max(0,cl.length-6)])/6;const bf=[['Above VWAP',spot>vw],['EMA9>EMA21',e9>e21],['Supertrend Bull',st.bull],['RSI>52',rs>52],['Trending Up',slope>5],['S&P+',S.sp500chg>0],['VIX<16',S.vix<16||S.vix===0],['Above Open',S.open>0&&spot>S.open]];const brf=[['Below VWAP',spot<vw],['EMA9<EMA21',e9<e21],['Supertrend Bear',!st.bull],['RSI<48',rs<48],['Trending Down',slope<-5],['S&P−',S.sp500chg<0],['VIX>18',S.vix>18],['Below Open',S.open>0&&spot<S.open]];const bs=bf.filter(f=>f[1]).length,br=brf.filter(f=>f[1]).length,net=bs-br;let label,col,strat;if(net>=5){label='STRONGLY BULLISH';col='var(--green)';strat='Buy dips — target R2/R3';}else if(net>=3){label='BULLISH';col='#66BB6A';strat='Buy pullbacks — SL below EMA9';}else if(net>=1){label='MILDLY BULLISH';col='var(--teal)';strat='Cautious CE only';}else if(net>=-1){label='SIDEWAYS';col='var(--yellow)';strat='Avoid — wait for breakout';}else if(net>=-3){label='MILDLY BEARISH';col='#FFA040';strat='Cautious PE only';}else if(net>=-5){label='BEARISH';col='#FF7043';strat='Sell rallies to VWAP';}else{label='STRONGLY BEARISH';col='var(--red)';strat='Sell all rallies — no long trades';}return{label,col,pct:Math.round(bs/8*100),strat,bs,br,factors:bf.filter(f=>f[1]).map(f=>f[0]).join(' · ')||'—',meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st}};}
-function computeSignal(cs,spot){if(cs.length<4){const piv=calcPivots([]);const atm=Math.round(spot/100)*100;return{signal:'WAIT',conf:0,gate:'Collecting candle data...',strike:atm,otype:'-',entry:null,sl:null,t1:piv.R1,t2:piv.R2,t3:piv.R3,pivots:piv,cl:{},bs:0,br:0,meta:{e9:0,e21:0,rsi:50,vwap:S.vwap,st:{bull:S.change>=0}}};}const cl=cs.map(c=>c.c);const e9=ema(cl,9),e21=ema(cl,21),rs=rsi(cl,14),vw=vwapCalc(cs),st=supertrend(cs),piv=calcPivots(cs);const slope=(cl[cl.length-1]-cl[Math.max(0,cl.length-6)])/6;const ist=new Date(Date.now()+5.5*3600000);const hh=ist.getUTCHours(),mm=ist.getUTCMinutes();const bull={'Price>VWAP':spot>vw,'EMA9>EMA21':e9>e21,'Supertrend Bull':st.bull,'RSI 45-68':rs>=45&&rs<=68,'Momentum Up':slope>3,'VIX Safe':S.vix<20||S.vix===0,'PCR>0.9':S.pcr>0.9,'RSI>50':rs>50};const bear={'Price<VWAP':spot<vw,'EMA9<EMA21':e9<e21,'Supertrend Bear':!st.bull,'RSI 32-55':rs>=32&&rs<=55,'Momentum Down':slope<-3,'VIX Safe':S.vix<20||S.vix===0,'PCR<1.0':S.pcr<1.0,'RSI<50':rs<50};const bs=Object.values(bull).filter(Boolean).length,br=Object.values(bear).filter(Boolean).length;let raw,conds;if(bs>=6){raw='BUY';conds=bull;}else if(br>=6){raw='SELL';conds=bear;}else if(bs>=5){raw='BUY';conds=bull;}else if(br>=5){raw='SELL';conds=bear;}else{raw='WAIT';conds=bs>=br?bull:bear;}const score=raw==='BUY'?bs:raw==='SELL'?br:Math.max(bs,br);const conf=raw==='WAIT'?Math.round(score/8*100):Math.min(95,60+score*5);const tooEarly=(hh<9)||(hh===9&&mm<30),tooLate=(hh>15)||(hh===15&&mm>0);let gate=null;if(tooEarly)gate='9:30 AM not cleared';else if(tooLate)gate='Market closed';else if(S.vix>22)gate='VIX too high';else if(conf<60&&raw!=='WAIT')gate='Confidence too low ('+conf+'%)';const sig=gate?'WAIT':raw;const atm=Math.round(spot/100)*100;return{signal:sig,raw,conf,score,gate,strike:atm,otype:sig==='BUY'?'CE':sig==='SELL'?'PE':'-',entry:sig==='BUY'?piv.R1:sig==='SELL'?piv.S1:null,sl:sig==='BUY'?piv.S1:sig==='SELL'?piv.R1:null,t1:sig==='BUY'?piv.R1:sig==='SELL'?piv.S1:null,t2:sig==='BUY'?piv.R2:sig==='SELL'?piv.S2:null,t3:sig==='BUY'?piv.R3:sig==='SELL'?piv.S3:null,pivots:piv,cl:conds,bs,br,meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st}};}
+// ═══════════════════ UPGRADED SIGNAL ENGINE v2 ═══════════════════
+// Captures big moves, adapts to VIX, gap analysis, momentum filter
+
+function detectMarketRegime(cs, spot, vix) {
+  // Classify market: TRENDING_UP, TRENDING_DOWN, RANGING, VOLATILE
+  if (cs.length < 10) return {regime:'UNKNOWN', bias:0};
+  const cl = cs.map(c=>c.c);
+  const opens = cs.map(c=>c.o);
+  const highs = cs.map(c=>c.h);
+  const lows = cs.map(c=>c.l);
+  // Gap from open
+  const dayOpen = cs[0].o;
+  const gapPct = ((spot - dayOpen) / dayOpen) * 100;
+  // First 15min move
+  const first15 = cs.slice(0, Math.min(15, cs.length));
+  const f15High = Math.max(...first15.map(c=>c.h));
+  const f15Low = Math.min(...first15.map(c=>c.l));
+  const f15Range = f15High - f15Low;
+  const f15Dir = first15[first15.length-1].c - first15[0].o;
+  // Overall momentum
+  const momentum = cl[cl.length-1] - cl[Math.max(0, cl.length-20)];
+  const momentumPct = (momentum / cl[Math.max(0, cl.length-20)]) * 100;
+  // ATR for volatility
+  const atrs = [];
+  for(let i=1;i<cs.length;i++) atrs.push(Math.max(cs[i].h-cs[i].l, Math.abs(cs[i].h-cs[i-1].c), Math.abs(cs[i].l-cs[i-1].c)));
+  const atr = atrs.length ? atrs.reduce((a,b)=>a+b,0)/atrs.length : 50;
+  // Classify
+  let regime, bias;
+  if (vix > 25) {
+    regime = 'VOLATILE';
+    bias = momentumPct < -0.5 ? -2 : momentumPct > 0.5 ? 2 : 0;
+  } else if (Math.abs(momentumPct) > 0.8 && Math.abs(gapPct) > 0.3) {
+    regime = momentumPct > 0 ? 'TRENDING_UP' : 'TRENDING_DOWN';
+    bias = momentumPct > 0 ? 3 : -3;
+  } else if (atr < 30) {
+    regime = 'RANGING';
+    bias = 0;
+  } else {
+    regime = 'NORMAL';
+    bias = momentumPct > 0 ? 1 : -1;
+  }
+  return {regime, bias, gapPct, f15Dir, f15Range, momentum, momentumPct, atr, dayOpen};
+}
+
+function computeTrend(cs, spot) {
+  if (cs.length < 3) return null;
+  const cl = cs.map(c=>c.c);
+  const e9=ema(cl,9), e21=ema(cl,21), rs=rsi(cl,14), vw=vwapCalc(cs), st=supertrend(cs);
+  const slope = (cl[cl.length-1] - cl[Math.max(0,cl.length-6)]) / 6;
+  const bf=[['Above VWAP',spot>vw],['EMA9>EMA21',e9>e21],['Supertrend Bull',st.bull],['RSI>52',rs>52],['Trending Up',slope>5],['S&P+',S.sp500chg>0],['VIX<16',S.vix<16||S.vix===0],['Above Open',S.open>0&&spot>S.open]];
+  const brf=[['Below VWAP',spot<vw],['EMA9<EMA21',e9<e21],['Supertrend Bear',!st.bull],['RSI<48',rs<48],['Trending Down',slope<-5],['S&P-',S.sp500chg<0],['VIX>18',S.vix>18],['Below Open',S.open>0&&spot<S.open]];
+  const bs=bf.filter(f=>f[1]).length, br=brf.filter(f=>f[1]).length, net=bs-br;
+  let label,col,strat;
+  if(net>=5){label='STRONGLY BULLISH';col='var(--green)';strat='Buy dips — target R2/R3';}
+  else if(net>=3){label='BULLISH';col='#66BB6A';strat='Buy pullbacks — SL below EMA9';}
+  else if(net>=1){label='MILDLY BULLISH';col='var(--teal)';strat='Cautious CE only';}
+  else if(net>=-1){label='SIDEWAYS';col='var(--yellow)';strat='Avoid — wait for breakout';}
+  else if(net>=-3){label='MILDLY BEARISH';col='#FFA040';strat='Cautious PE only';}
+  else if(net>=-5){label='BEARISH';col='#FF7043';strat='Sell rallies to VWAP';}
+  else{label='STRONGLY BEARISH';col='var(--red)';strat='Sell all rallies — no long trades';}
+  return {label,col,pct:Math.round(bs/8*100),strat,bs,br,factors:bf.filter(f=>f[1]).map(f=>f[0]).join(' · ')||'—',meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st}};
+}
+
+function computeSignal(cs, spot) {
+  const piv = calcPivots(cs.length ? cs : []);
+  const atm = Math.round(spot/100)*100;
+  const base = {signal:'WAIT',conf:0,gate:'',strike:atm,otype:'-',entry:null,sl:null,t1:piv.R1,t2:piv.R2,t3:piv.R3,pivots:piv,cl:{},bs:0,br:0,meta:{e9:0,e21:0,rsi:50,vwap:S.vwap,st:{bull:S.change>=0}}};
+  if (cs.length < 4) { base.gate='Collecting data...'; return base; }
+
+  const cl = cs.map(c=>c.c);
+  const e9=ema(cl,9), e21=ema(cl,21), rs=rsi(cl,14), vw=vwapCalc(cs), st=supertrend(cs);
+  const slope = (cl[cl.length-1]-cl[Math.max(0,cl.length-6)])/6;
+  const vix = S.vix || 0;
+  const regime = detectMarketRegime(cs, spot, vix);
+
+  // IST time check
+  const ist = new Date(Date.now()+5.5*3600000);
+  const hh = ist.getUTCHours(), mm = ist.getUTCMinutes();
+  const curMins = hh*60+mm;
+
+  // Time gates
+  if (curMins < 9*60+30) { base.gate='Before 9:30 AM'; return base; }
+  if (curMins > 15*60+0) { base.gate='Market closed'; return base; }
+
+  // ── REGIME-BASED SIGNAL LOGIC ──
+
+  // VOLATILE / HIGH VIX regime (like yesterday)
+  if (regime.regime === 'VOLATILE' || vix > 22) {
+    // Only trade strong momentum with tight confirmation
+    const strongDown = regime.momentumPct < -0.8 && spot < vw && e9 < e21 && rs < 45;
+    const strongUp   = regime.momentumPct > 0.8  && spot > vw && e9 > e21 && rs > 55;
+    if (strongDown) {
+      const conf = Math.min(88, 65 + Math.round(Math.abs(regime.momentumPct)*5));
+      return {...base, signal:'SELL', conf, gate:null, otype:'PE',
+        entry:piv.S1, sl:piv.R1, t1:piv.S1, t2:piv.S2, t3:piv.S3,
+        cl:{'Strong Momentum Down':true,'Below VWAP':true,'EMA Bear':true,'RSI<45':true},
+        bs:0, br:4, meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st},
+        regime:'VOLATILE'};
+    }
+    if (strongUp) {
+      const conf = Math.min(88, 65 + Math.round(regime.momentumPct*5));
+      return {...base, signal:'BUY', conf, gate:null, otype:'CE',
+        entry:piv.R1, sl:piv.S1, t1:piv.R1, t2:piv.R2, t3:piv.R3,
+        cl:{'Strong Momentum Up':true,'Above VWAP':true,'EMA Bull':true,'RSI>55':true},
+        bs:4, br:0, meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st},
+        regime:'VOLATILE'};
+    }
+    base.gate = `VIX ${vix.toFixed(1)} — waiting for strong momentum`;
+    return base;
+  }
+
+  // GAP DOWN opening (trending down day)
+  if (regime.gapPct < -0.4 && regime.f15Dir < 0 && curMins < 10*60) {
+    const conf = Math.min(85, 68 + Math.round(Math.abs(regime.gapPct)*8));
+    return {...base, signal:'SELL', conf, gate:null, otype:'PE',
+      entry:piv.S1, sl:piv.P, t1:piv.S1, t2:piv.S2, t3:piv.S3,
+      cl:{'Gap Down':true,'First 15min Bearish':true,'Below Open':true},
+      bs:0, br:3, meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st},
+      regime:'GAP_DOWN'};
+  }
+
+  // GAP UP opening (trending up day)
+  if (regime.gapPct > 0.4 && regime.f15Dir > 0 && curMins < 10*60) {
+    const conf = Math.min(85, 68 + Math.round(regime.gapPct*8));
+    return {...base, signal:'BUY', conf, gate:null, otype:'CE',
+      entry:piv.R1, sl:piv.P, t1:piv.R1, t2:piv.R2, t3:piv.R3,
+      cl:{'Gap Up':true,'First 15min Bullish':true,'Above Open':true},
+      bs:3, br:0, meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st},
+      regime:'GAP_UP'};
+  }
+
+  // NORMAL regime — standard 8-factor system
+  const bull = {
+    'Price>VWAP': spot>vw,
+    'EMA9>EMA21': e9>e21,
+    'Supertrend Bull': st.bull,
+    'RSI 45-68': rs>=45&&rs<=68,
+    'Momentum Up': slope>3,
+    'VIX Safe': vix<20||vix===0,
+    'PCR>0.9': S.pcr>0.9,
+    'RSI>50': rs>50
+  };
+  const bear = {
+    'Price<VWAP': spot<vw,
+    'EMA9<EMA21': e9<e21,
+    'Supertrend Bear': !st.bull,
+    'RSI 32-55': rs>=32&&rs<=55,
+    'Momentum Down': slope<-3,
+    'VIX Safe': vix<20||vix===0,
+    'PCR<1.0': S.pcr<1.0,
+    'RSI<50': rs<50
+  };
+  const bs = Object.values(bull).filter(Boolean).length;
+  const br = Object.values(bear).filter(Boolean).length;
+
+  // Dynamic threshold based on VIX
+  const threshold = vix > 18 ? 5 : 6;
+
+  let raw, conds;
+  if (bs >= threshold) { raw='BUY'; conds=bull; }
+  else if (br >= threshold) { raw='SELL'; conds=bear; }
+  else { raw='WAIT'; conds=bs>=br?bull:bear; }
+
+  const score = raw==='BUY'?bs:raw==='SELL'?br:Math.max(bs,br);
+  const conf = raw==='WAIT' ? Math.round(score/8*100) : Math.min(92, 60+score*5);
+  if (conf < 60 && raw !== 'WAIT') { base.gate=`Confidence ${conf}% too low`; return base; }
+
+  const sig = raw==='WAIT' ? 'WAIT' : raw;
+  return {
+    signal:sig, raw, conf, score, gate:null, strike:atm,
+    otype: sig==='BUY'?'CE':sig==='SELL'?'PE':'-',
+    entry: sig==='BUY'?piv.R1:sig==='SELL'?piv.S1:null,
+    sl:    sig==='BUY'?piv.S1:sig==='SELL'?piv.R1:null,
+    t1:    sig==='BUY'?piv.R1:sig==='SELL'?piv.S1:null,
+    t2:    sig==='BUY'?piv.R2:sig==='SELL'?piv.S2:null,
+    t3:    sig==='BUY'?piv.R3:sig==='SELL'?piv.S3:null,
+    pivots:piv, cl:conds, bs, br,
+    meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st},
+    regime:regime.regime
+  };
+}
+
 
 function renderAll(){if(!S.spot)return;const f=n=>Math.round(n).toLocaleString('en-IN');const cc=n=>n>=0?'up':'dn';const fp=n=>(n>=0?'+':'')+n.toFixed(2)+'%';const el=document.getElementById('spot-big');el.textContent='₹'+f(S.spot);el.className=cc(S.change);el.style.fontFamily='var(--cond)';el.style.fontSize='32px';el.style.fontWeight='900';document.getElementById('chg').textContent=(S.change>=0?'▲':'▼')+Math.abs(S.change).toFixed(2)+' ('+Math.abs(S.pct).toFixed(2)+'%)';document.getElementById('chg').className=cc(S.change);document.getElementById('d-o').textContent=f(S.open);document.getElementById('d-h').textContent=f(S.high);document.getElementById('d-l').textContent=f(S.low);document.getElementById('d-vw').textContent=f(S.vwap);document.getElementById('g-vix').textContent=S.vix?S.vix.toFixed(1):'—';document.getElementById('g-vix').className='g-v '+(S.vix>20?'dn':S.vix>15?'neu':'up');document.getElementById('g-pcr').textContent=S.pcr.toFixed(2);document.getElementById('g-pcr').className='g-v '+(S.pcr>=1.2?'up':S.pcr>=0.9?'neu':'dn');['g-sp','g-cr','g-gd'].forEach((id,i)=>{const v=[S.sp500chg,S.crudechg,S.goldchg][i];document.getElementById(id).textContent=v?fp(v):'—';document.getElementById(id).className='g-v '+cc(v);});document.getElementById('g-usd').textContent=S.usdinr?S.usdinr.toFixed(1):'—';const oc=buildOC(S.spot);renderOC(oc);renderMinis(oc);const t=computeTrend(S.candles,S.spot);renderTrend(t);const sig=computeSignal(S.candles,S.spot);S.signal=sig;renderSignal(sig);checkPaperTrade(sig);renderInds(sig?.meta||t?.meta);renderSR(sig?.pivots,S.spot);if(prevSig&&prevSig!=='WAIT'&&sig?.signal!==prevSig&&sig?.signal!=='WAIT')toast('Signal: '+prevSig+' → '+sig.signal);if((!prevSig||prevSig==='WAIT')&&sig?.signal!=='WAIT'){ariaExplain(sig);goTab(0);}prevSig=sig?.signal;}
 
 function renderTrend(t){if(!t){document.getElementById('tl').textContent=S.candles.length<3?'Collecting...':'—';return;}document.getElementById('tl').textContent=t.label;document.getElementById('tl').style.color=t.col;document.getElementById('tf2').style.width=t.pct+'%';document.getElementById('tf2').style.background=t.col;document.getElementById('t-fac').textContent='Bull '+t.bs+'/8 · Bear '+t.br+'/8 · '+t.factors;document.getElementById('t-str').textContent=t.strat;document.getElementById('t-str').style.background=t.col+'22';document.getElementById('t-str').style.color=t.col;}
-function renderSignal(sig){const body=document.getElementById('sig-body');const ist=new Date(Date.now()+5.5*3600000);document.getElementById('sig-ts').textContent=`${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')} IST`;if(!sig||sig.signal==='WAIT'){const m=sig?.gate||(sig?`Bull ${sig.bs}/8 · Bear ${sig.br}/8`:'Waiting...');body.innerHTML=`<div class="sw"><div style="font-size:32px;margin-bottom:6px">⏸</div><div class="sw-t">WAIT</div><div class="sw-m">${m}${sig&&sig.bs+sig.br>0?`<br><br><span style="color:var(--dim)">Bull: ${sig.bs}/8 · Bear: ${sig.br}/8 · Conf: ${sig.conf}%</span>`:''}</div></div>`;return;}const isBuy=sig.signal==='BUY';const col=isBuy?'var(--green)':'var(--red)';const bg=isBuy?'rgba(0,230,118,0.04)':'rgba(255,23,68,0.04)';const f=n=>n?Math.round(n).toLocaleString('en-IN'):'—';const conds=Object.entries(sig.cl);const met=conds.filter(([,v])=>v).length;body.innerHTML=`<div class="sig-ac" style="background:${bg}"><div class="sv" style="color:${col}">${isBuy?'BUY CALL':'BUY PUT'}</div><div class="ss" style="color:${col}">${isBuy?'BULLISH':'BEARISH'} SETUP</div><div class="sb" style="background:${col}18;color:${col};border:1px solid ${col}44">${sig.strike} ${sig.otype} · WEEKLY</div></div><div class="lg"><div class="lc" style="border-color:var(--teal)"><div class="lc-l">ENTRY</div><div class="lc-v" style="color:var(--teal)">₹${f(sig.entry)}</div></div><div class="lc" style="border-color:var(--red)"><div class="lc-l">STOP LOSS</div><div class="lc-v" style="color:var(--red)">₹${f(sig.sl)}</div></div><div class="lc" style="border-color:var(--green)"><div class="lc-l">TARGET 1</div><div class="lc-v" style="color:var(--green)">₹${f(sig.t1)}</div></div><div class="lc" style="border-color:var(--yellow)"><div class="lc-l">TARGET 2</div><div class="lc-v" style="color:var(--yellow)">₹${f(sig.t2)}</div></div></div><div class="cr"><span style="font-size:9px;color:var(--muted);flex-shrink:0">CONFIDENCE</span><div class="cb"><div class="cf" style="width:${sig.conf}%;background:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'}"></div></div><span style="font-size:15px;font-weight:900;font-family:var(--cond);color:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'};flex-shrink:0">${sig.conf}%</span><span style="font-size:9px;color:var(--muted);flex-shrink:0">${met}/${conds.length}</span></div><div class="cds">${conds.map(([k,v])=>`<span class="cd" style="background:${v?'rgba(0,230,118,0.1)':'rgba(74,96,112,0.15)'};color:${v?'var(--green)':'var(--muted)'}">${v?'✓':'✗'} ${k}</span>`).join('')}</div><div class="sig-foot">⚠ Exit if BN ${isBuy?'closes below':'closes above'} ₹${f(sig.sl)} · T3: ₹${f(sig.t3)}</div>`;}
+function renderSignal(sig){const body=document.getElementById('sig-body');const ist=new Date(Date.now()+5.5*3600000);document.getElementById('sig-ts').textContent=`${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')} IST`;if(!sig||sig.signal==='WAIT'){const m=sig?.gate||(sig?`Bull ${sig.bs}/8 · Bear ${sig.br}/8`:'Waiting...');body.innerHTML=`<div class="sw"><div style="font-size:32px;margin-bottom:6px">⏸</div><div class="sw-t">WAIT</div><div class="sw-m">${m}${sig&&sig.bs+sig.br>0?`<br><br><span style="color:var(--dim)">Bull: ${sig.bs}/8 · Bear: ${sig.br}/8 · Conf: ${sig.conf}%</span>`:''}</div></div>`;return;}const isBuy=sig.signal==='BUY';const col=isBuy?'var(--green)':'var(--red)';const bg=isBuy?'rgba(0,230,118,0.04)':'rgba(255,23,68,0.04)';const f=n=>n?Math.round(n).toLocaleString('en-IN'):'—';const conds=Object.entries(sig.cl);const met=conds.filter(([,v])=>v).length;body.innerHTML=`<div class="sig-ac" style="background:${bg}"><div class="sv" style="color:${col}">${isBuy?'BUY CALL':'BUY PUT'}</div><div class="ss" style="color:${col}">${isBuy?'BULLISH':'BEARISH'} SETUP</div><div class="sb" style="background:${col}18;color:${col};border:1px solid ${col}44">${sig.strike} ${sig.otype} · WEEKLY${sig.regime&&sig.regime!=="NORMAL"?" · "+sig.regime:""}</div></div><div class="lg"><div class="lc" style="border-color:var(--teal)"><div class="lc-l">ENTRY</div><div class="lc-v" style="color:var(--teal)">₹${f(sig.entry)}</div></div><div class="lc" style="border-color:var(--red)"><div class="lc-l">STOP LOSS</div><div class="lc-v" style="color:var(--red)">₹${f(sig.sl)}</div></div><div class="lc" style="border-color:var(--green)"><div class="lc-l">TARGET 1</div><div class="lc-v" style="color:var(--green)">₹${f(sig.t1)}</div></div><div class="lc" style="border-color:var(--yellow)"><div class="lc-l">TARGET 2</div><div class="lc-v" style="color:var(--yellow)">₹${f(sig.t2)}</div></div></div><div class="cr"><span style="font-size:9px;color:var(--muted);flex-shrink:0">CONFIDENCE</span><div class="cb"><div class="cf" style="width:${sig.conf}%;background:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'}"></div></div><span style="font-size:15px;font-weight:900;font-family:var(--cond);color:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'};flex-shrink:0">${sig.conf}%</span><span style="font-size:9px;color:var(--muted);flex-shrink:0">${met}/${conds.length}</span></div><div class="cds">${conds.map(([k,v])=>`<span class="cd" style="background:${v?'rgba(0,230,118,0.1)':'rgba(74,96,112,0.15)'};color:${v?'var(--green)':'var(--muted)'}">${v?'✓':'✗'} ${k}</span>`).join('')}</div><div class="sig-foot">⚠ Exit if BN ${isBuy?'closes below':'closes above'} ₹${f(sig.sl)} · T3: ₹${f(sig.t3)}</div>`;}
 function renderInds(meta){if(!meta)return;document.getElementById('i-e9').textContent=meta.e9?.toLocaleString('en-IN')||'—';document.getElementById('i-e9').style.color=meta.e9>meta.e21?'var(--green)':'var(--red)';document.getElementById('i-e21').textContent=meta.e21?.toLocaleString('en-IN')||'—';document.getElementById('i-rsi').textContent=meta.rsi||'—';document.getElementById('i-rsi').style.color=meta.rsi>65?'var(--red)':meta.rsi<35?'var(--green)':meta.rsi>50?'var(--green)':'var(--orange)';document.getElementById('i-rsib').style.width=(meta.rsi||50)+'%';document.getElementById('i-rsib').style.background=meta.rsi>70?'var(--red)':meta.rsi<30?'var(--green)':'var(--yellow)';document.getElementById('i-vw').textContent=meta.vwap?.toLocaleString('en-IN')||'—';document.getElementById('i-vw').style.color=S.spot>meta.vwap?'var(--green)':'var(--red)';document.getElementById('i-st').textContent=meta.st?.bull?'BULL ▲':'BEAR ▼';document.getElementById('i-st').style.color=meta.st?.bull?'var(--green)':'var(--red)';document.getElementById('i-pcr').textContent=S.pcr.toFixed(2);document.getElementById('i-pcr').style.color=S.pcr>=1.2?'var(--green)':S.pcr>=0.9?'var(--teal)':'var(--red)';}
 function renderMinis(oc){if(!oc)return;const pcr=oc.pcr;const pEl=document.getElementById('m-pcr');pEl.textContent=pcr.toFixed(2);pEl.style.color=pcr>=1.3?'var(--green)':pcr>=1.0?'var(--teal)':pcr>=0.7?'var(--yellow)':'var(--red)';document.getElementById('m-bias').textContent=pcr>=1.2?'Bullish ↑':pcr>=0.9?'Neutral':'Bearish ↓';document.getElementById('m-mp').textContent='₹'+oc.maxPain.toLocaleString('en-IN');document.getElementById('m-oi').textContent=((oc.totCE+oc.totPE)/100000).toFixed(1)+'L';const vix=S.vix;document.getElementById('m-vix').textContent=vix?vix.toFixed(1):'—';document.getElementById('m-vix').style.color=vix<14?'var(--green)':vix<18?'var(--teal)':vix<22?'var(--yellow)':'var(--red)';document.getElementById('m-vixs').textContent=vix?vix<14?'CALM':vix<18?'NORMAL':vix<22?'ELEVATED':'DANGER':'—';}
 function renderOC(oc){if(!oc)return;const spot=S.spot,atm=Math.round(spot/100)*100;const maxOI=Math.max(...oc.strikes.map(s=>Math.max(oc.ce[s]?.oi||0,oc.pe[s]?.oi||0)),1);let html='';for(const s of oc.strikes){const c=oc.ce[s]||{ltp:0,oi:0},p=oc.pe[s]||{ltp:0,oi:0};const isATM=Math.abs(s-spot)<50;const cw=Math.round((c.oi/maxOI)*28),pw=Math.round((p.oi/maxOI)*28);const oiK=n=>n>=100000?(n/100000).toFixed(1)+'L':(n/1000).toFixed(0)+'K';html+=`<tr${isATM?' class="atm"':''}><td style="text-align:left;color:var(--green)">₹${c.ltp}<span class="oib" style="width:${cw}px;background:var(--teal)"></span></td><td style="color:var(--teal)">${oiK(c.oi)}</td><td class="c" style="font-weight:900${isATM?';color:var(--yellow)':''}">${s.toLocaleString('en-IN')}${isATM?'<br><span style="font-size:6px;color:var(--yellow)">ATM</span>':''}</td><td style="color:var(--orange)">${oiK(p.oi)}</td><td style="text-align:right;color:var(--red)">₹${p.ltp}<span class="oib" style="width:${pw}px;background:var(--orange)"></span></td></tr>`;}document.getElementById('oc-body').innerHTML=html;}
@@ -978,8 +1217,11 @@ function checkPaperTrade(sig){
     lastSignalFired = key;
     fetch('/api/trades/signal', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({signal:sig.signal, otype:sig.otype, strike:sig.strike, sl:sig.sl, t1:sig.t1, t2:sig.t2, conf:sig.conf})
-    }).then(function(){fetchTrades(); toast('Paper trade opened: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike);});
+      body: JSON.stringify({signal:sig.signal==='BUY'?'BUY':'SELL', otype:sig.otype, strike:sig.strike, sl:sig.sl, t1:sig.t1, t2:sig.t2, conf:sig.conf})
+    }).then(function(){
+      fetchTrades();
+      toast('Paper trade: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike.toLocaleString('en-IN') + ' @ ' + sig.conf + '% conf');
+    });
   }
 }
 
@@ -1144,7 +1386,7 @@ def fetch_candles(interval='5'):
         from datetime import timezone, timedelta
         ist = timezone(timedelta(hours=5, minutes=30))
         today = datetime.now(timezone.utc).astimezone(ist).strftime('%Y-%m-%d')
-        yesterday = (datetime.now(timezone.utc).astimezone(ist) - timedelta(days=2)).strftime('%Y-%m-%d')
+        yesterday = (datetime.now(timezone.utc).astimezone(ist) - timedelta(days=5)).strftime('%Y-%m-%d')
         target_min = int({'1':1,'5':5,'15':15,'60':30}.get(str(interval), 5))
         # Upstox only supports 1minute and 30minute
         upstox_iv = '1minute'
@@ -1375,7 +1617,7 @@ def load_historical_for_display():
                     print(f"[HISTORICAL] Loaded: BN ₹{spot:,.0f} on {last_str}")
         # Also load candles for chart display
         url2 = (f"https://api.upstox.com/v2/historical-candle/"
-                f"{requests.utils.quote(BN_KEY)}/5minute/{last_str}/{start_str}")
+                f"{requests.utils.quote(BN_KEY)}/1minute/{last_str}/{start_str}")
         r2 = requests.get(url2, headers=hdr(), timeout=15)
         if r2.status_code == 200:
             raw = r2.json().get("data", {}).get("candles", [])
@@ -1479,7 +1721,9 @@ def trades_api():
         "open_trade": open_t,
         "live_pnl": live_pnl,
         "trades": paper["trades"][:50],
-        "stats": paper["stats"]
+        "stats": paper["stats"],
+        "daily": paper["daily"],
+        "rules": RULES
     })
 
 @app.route("/api/trades/signal", methods=["POST"])
@@ -1489,8 +1733,11 @@ def trades_signal():
     sig = data.get("signal")
     spot = cache.get("spot", 0)
     vix = cache.get("vix", 15)
+    print(f"[PAPER] Signal received: {sig} | Spot: {spot} | Conf: {data.get('conf',0)}")
     if sig in ("BUY", "SELL") and spot:
         open_trade(data, spot, vix)
+    else:
+        print(f"[PAPER] Signal ignored: sig={sig} spot={spot}")
     return jsonify({"ok": True})
 
 @app.route("/api/trades/close", methods=["POST"])
