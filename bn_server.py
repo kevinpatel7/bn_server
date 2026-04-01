@@ -302,14 +302,22 @@ def load_last_session():
 
 def is_market_open():
     """Check if NSE market is currently open (IST = UTC+5:30)."""
+    # Use UTC time and add 330 minutes (5h30m) for IST
+    utc_now = datetime.utcnow()
+    ist_minutes = utc_now.hour * 60 + utc_now.minute + 330
+    ist_hour = (ist_minutes // 60) % 24
+    ist_min = ist_minutes % 60
+    # Get IST weekday (handle day rollover)
     from datetime import timezone, timedelta
     ist = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(timezone.utc).astimezone(ist)
-    if now.weekday() >= 5:
+    ist_now = datetime.now(timezone.utc).astimezone(ist)
+    weekday = ist_now.weekday()
+    if weekday >= 5:  # Saturday or Sunday
+        print(f"[MARKET] Weekend — closed")
         return False
-    mins = now.hour * 60 + now.minute
-    open_ok = (9 * 60 + 15) <= mins <= (15 * 60 + 30)
-    print(f"[MARKET] IST={now.strftime('%H:%M')} weekday={now.weekday()} open={open_ok}")
+    cur = ist_hour * 60 + ist_min
+    open_ok = (9 * 60 + 15) <= cur <= (15 * 60 + 30)
+    print(f"[MARKET] IST={ist_hour:02d}:{ist_min:02d} weekday={weekday} open={open_ok}")
     return open_ok
 
 TERMINAL_HTML = """<!DOCTYPE html>
@@ -1275,7 +1283,10 @@ def callback():
         if "access_token" not in data: return f"Auth failed: {data}", 400
         save_token(data)
         fetch_prices()
-        threading.Thread(target=fetch_loop, daemon=True).start()
+        # Start fetch loop if not running
+        t = threading.Thread(target=fetch_loop, daemon=True)
+        t.daemon = True
+        t.start()
         if WS_AVAILABLE:
             threading.Thread(target=start_websocket, daemon=True).start()
             print("[WS] WebSocket thread started")
@@ -1649,6 +1660,7 @@ def fetch_loop():
             # If WebSocket not active, still poll every 5s
             time.sleep(5)
         else:
+            cache['market_open'] = False
             if was_open:
                 print("[SESSION] Market closed. Saving final session.")
                 save_last_session()
