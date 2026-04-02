@@ -1308,7 +1308,7 @@ def terminal():
 def fetch_quote(keys):
     try:
         url = f"https://api.upstox.com/v2/market-quote/quotes?instrument_key={requests.utils.quote(','.join(keys))}"
-        r = requests.get(url, headers=hdr(), timeout=10)
+        r = requests.get(url, headers=hdr(), timeout=6)
         r.raise_for_status()
         return r.json().get("data", {})
     except Exception as e:
@@ -1465,7 +1465,15 @@ def refresh_candles(interval='5'):
 
 def fetch_prices():
     if not state["access_token"]:
-        cache["error"] = "Not authenticated"; cache["source"] = "unauthenticated"; return False
+        cache["error"] = "Not authenticated - visit /login"; cache["source"] = "unauthenticated"; return False
+    # Check if token might be expired (Upstox tokens expire daily at midnight IST)
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    ist_now = datetime.now(timezone.utc).astimezone(ist)
+    # If it's past 9am and we have no spot price and we're authenticated - likely expired
+    if (cache.get("spot", 0) == 0 and cache.get("source") == "error" and
+        ist_now.hour >= 9 and cache.get("authenticated")):
+        cache["error"] = "Token may be expired - please visit /login to refresh"
     try:
         data = fetch_quote([BN_KEY, VIX_KEY])
         bn  = data.get("NSE_INDEX:Nifty Bank", {})
@@ -1497,8 +1505,9 @@ def fetch_prices():
         # Check paper trade exits on every price update
         if paper["open_trade"] and spot:
             check_exit(spot)
-        # Refresh candles every fetch cycle
-        threading.Thread(target=refresh_candles, args=("5",), daemon=True).start()
+        # Refresh candles every 2 minutes (not every tick)
+        if int(time.time()) % 120 < 6:
+            threading.Thread(target=refresh_candles, args=("1",), daemon=True).start()
         print(f"[{cache['last_updated']}] BN ₹{spot:,.0f} | VIX {cache['vix']} | PCR {cache['pcr']}")
         return True
     except Exception as e:
@@ -1649,28 +1658,42 @@ def load_historical_for_display():
 def fetch_loop():
     was_open = False
     historical_loaded = False
+    consecutive_failures = 0
     while True:
-        now_open = is_market_open()
-        cache["market_open"] = now_open
-        if now_open:
-            was_open = True
-            historical_loaded = False
-            fetch_prices()
-            # If WebSocket active, REST is just a backup - poll every 5s
-            # If WebSocket not active, still poll every 5s
-            time.sleep(5)
-        else:
-            cache['market_open'] = False
-            if was_open:
-                print("[SESSION] Market closed. Saving final session.")
-                save_last_session()
-                was_open = False
-            # Load historical data when market is closed
-            if not historical_loaded:
-                print("[SESSION] Market closed — loading historical data for display.")
-                load_historical_for_display()
-                historical_loaded = True
-            time.sleep(300)
+        try:
+            now_open = is_market_open()
+            cache["market_open"] = now_open
+            if now_open:
+                was_open = True
+                historical_loaded = False
+                success = fetch_prices()
+                if success:
+                    consecutive_failures = 0
+                else:
+                    consecutive_failures += 1
+                    print(f"[LOOP] Fetch failed ({consecutive_failures} times)")
+                    if consecutive_failures >= 10:
+                        # Token likely expired - mark as unauthenticated
+                        print("[LOOP] Too many failures - token may have expired")
+                        cache["authenticated"] = False
+                        cache["source"] = "Token expired - please login again"
+                        consecutive_failures = 0
+                time.sleep(5)
+            else:
+                cache['market_open'] = False
+                consecutive_failures = 0
+                if was_open:
+                    print("[SESSION] Market closed. Saving final session.")
+                    save_last_session()
+                    was_open = False
+                if not historical_loaded:
+                    print("[SESSION] Market closed — loading historical data.")
+                    load_historical_for_display()
+                    historical_loaded = True
+                time.sleep(300)
+        except Exception as e:
+            print(f"[LOOP] Unexpected error: {e}")
+            time.sleep(10)  # Wait and retry
 
 @app.route("/")
 def index():
