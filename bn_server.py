@@ -1424,13 +1424,14 @@ async function resetAccount(){
 
 function checkPaperTrade(sig){
   if(!sig || sig.signal==='WAIT') return;
-  const key = sig.signal+'_'+sig.strike+'_'+sig.conf;
+  const key = sig.signal+'_'+sig.strike+'_'+Math.round((sig.conf||65)/10);
   if(key === lastSignalFired) return;
-  if(sig.conf >= 60){
+  const effectiveConf = sig.conf || (sig.signal!=='WAIT' ? 65 : 0);
+  if(effectiveConf >= 55){
     lastSignalFired = key;
     fetch('/api/trades/signal', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({signal:sig.signal==='BUY'?'BUY':'SELL', otype:sig.otype, strike:sig.strike, sl:sig.sl, t1:sig.t1, t2:sig.t2, conf:sig.conf})
+      body: JSON.stringify({signal:sig.signal==='BUY'?'BUY':'SELL', otype:sig.otype, strike:sig.strike, sl:sig.sl, t1:sig.t1, t2:sig.t2, conf:effectiveConf})
     }).then(function(){
       fetchTrades();
       // Start TradeBrain monitoring
