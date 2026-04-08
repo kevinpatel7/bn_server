@@ -898,7 +898,7 @@ function computeSignal(cs, spot) {
   const meta={e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st};
 
   // ── STRONG TREND SIGNALS ──
-  if(behaviour.action==='BUY_CALL' && behaviour.strength>=65){
+  if(behaviour.action==='BUY_CALL' && behaviour.strength>=58){
     const conf=Math.min(92, behaviour.strength);
     return{...base,signal:'BUY',conf,gate:null,otype:'CE',
       entry:piv.R1,sl:Math.max(piv.S1, spot-150),t1:piv.R1,t2:piv.R2,t3:piv.R3,
@@ -907,7 +907,7 @@ function computeSignal(cs, spot) {
       regime_note:behaviour.reason};
   }
 
-  if(behaviour.action==='BUY_PUT' && behaviour.strength>=65){
+  if(behaviour.action==='BUY_PUT' && behaviour.strength>=58){
     const conf=Math.min(92, behaviour.strength);
     return{...base,signal:'SELL',conf,gate:null,otype:'PE',
       entry:piv.S1,sl:Math.min(piv.R1, spot+150),t1:piv.S1,t2:piv.S2,t3:piv.S3,
@@ -917,7 +917,7 @@ function computeSignal(cs, spot) {
   }
 
   // ── REVERSAL SIGNALS (catching turns) ──
-  if(behaviour.action==='WATCH_SHORT' && behaviour.strength>=55 && rs>68){
+  if(behaviour.action==='WATCH_SHORT' && behaviour.strength>=50 && rs>65){
     const conf=Math.min(80, behaviour.strength+5);
     return{...base,signal:'SELL',conf,gate:null,otype:'PE',
       entry:piv.S1,sl:spot+100,t1:piv.S1,t2:piv.S2,t3:piv.S3,
@@ -925,7 +925,7 @@ function computeSignal(cs, spot) {
       bs:0,br:3,meta,behaviour:'REVERSAL_DOWN',regime_note:behaviour.reason};
   }
 
-  if(behaviour.action==='WATCH_LONG' && behaviour.strength>=55 && rs<32){
+  if(behaviour.action==='WATCH_LONG' && behaviour.strength>=50 && rs<35){
     const conf=Math.min(80, behaviour.strength+5);
     return{...base,signal:'BUY',conf,gate:null,otype:'CE',
       entry:piv.R1,sl:spot-100,t1:piv.R1,t2:piv.R2,t3:piv.R3,
@@ -942,7 +942,7 @@ function computeSignal(cs, spot) {
     'PCR<1.0':S.pcr<1.0,'RSI<50':rs<50,'S&P-':S.sp500chg<0};
   const bs=Object.values(bull).filter(Boolean).length;
   const br=Object.values(bear).filter(Boolean).length;
-  const threshold = vix>20 ? 6 : 5;
+  const threshold = vix>20 ? 5 : 4;
   let raw='WAIT',conds=bs>=br?bull:bear;
   if(bs>=threshold){raw='BUY';conds=bull;}
   else if(br>=threshold){raw='SELL';conds=bear;}
@@ -1264,6 +1264,8 @@ function updateBrainDisplay(result){
 }
 // Boot
 fetchFromServer();setInterval(fetchFromServer,5000);
+// Auto reload page every 4 hours to prevent stale cache
+setTimeout(()=>location.reload(), 4*60*60*1000);
 
 // ═══════ UPSTOX CHART ENGINE ═══════
 var lwC=null,cSeries=null,e9S=null,e21S=null,vwS=null,curIv=5;
