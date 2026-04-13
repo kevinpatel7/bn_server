@@ -53,6 +53,218 @@ cache = {
 LAST_SESSION_FILE = "last_session.json"
 TRADES_FILE = "paper_trades.json"
 
+# ═══════════════════ PHASE 2 — END OF DAY LEARNING ═══════════════════
+LEARNING_FILE = "learning_log.json"
+learning = {"days": [], "signal_stats": {}, "pattern_weights": {}}
+
+
+# ═══════════════════ PHASE 3 — ADAPTIVE SIGNAL WEIGHTS ═══════════════════
+def get_adaptive_confidence_boost(otype, vix):
+    """
+    Phase 3: Return confidence adjustment based on learned patterns.
+    Patterns that have been working get a boost.
+    Patterns that have been losing get penalized.
+    """
+    vix_bucket = "high" if vix > 22 else "normal"
+    # Check if we have learned data for this pattern
+    # Use day_direction from cache if available
+    day_move = cache.get("spot", 0) - cache.get("open", 0)
+    day_direction = "UP" if day_move > 50 else "DOWN" if day_move < -50 else "FLAT"
+    direction_match = (otype=="CE" and day_direction=="UP") or (otype=="PE" and day_direction=="DOWN")
+    pattern_key = f"{vix_bucket}_{otype}_{direction_match}"
+    weight = learning["pattern_weights"].get(pattern_key, 1.0)
+    # Convert weight to confidence boost (-15 to +15)
+    boost = round((weight - 1.0) * 30)
+    boost = max(-15, min(15, boost))
+    if boost != 0:
+        print(f"[PHASE3] Pattern {pattern_key} weight={weight:.2f} boost={boost:+d}%")
+    return boost
+
+def load_learning():
+    try:
+        with open(LEARNING_FILE) as f:
+            data = json.load(f)
+            learning["days"] = data.get("days", [])
+            learning["signal_stats"] = data.get("signal_stats", {})
+            learning["pattern_weights"] = data.get("pattern_weights", {})
+            print(f"[LEARN] Loaded {len(learning['days'])} days of learning data")
+    except: pass
+
+def save_learning():
+    try:
+        with open(LEARNING_FILE, "w") as f:
+            json.dump(learning, f, indent=2)
+    except Exception as e:
+        print(f"[LEARN] Save error: {e}")
+
+def end_of_day_review():
+    """Run at market close — analyze today's trades and learn."""
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    today = datetime.now(timezone.utc).astimezone(ist).strftime("%Y-%m-%d")
+    
+    trades_today = [t for t in paper["trades"] 
+                   if t.get("time","").startswith(datetime.now(timezone.utc).astimezone(ist).strftime("%d %b"))]
+    
+    if not trades_today:
+        print("[LEARN] No trades today to review")
+        return
+    
+    # Calculate day stats
+    total = len(trades_today)
+    wins = sum(1 for t in trades_today if t.get("pnl", 0) > 0)
+    losses = total - wins
+    total_pnl = sum(t.get("pnl", 0) for t in trades_today)
+    win_rate = round(wins/total*100, 1) if total > 0 else 0
+    avg_win = round(sum(t["pnl"] for t in trades_today if t.get("pnl",0)>0) / max(wins,1), 0)
+    avg_loss = round(sum(t["pnl"] for t in trades_today if t.get("pnl",0)<0) / max(losses,1), 0)
+    
+    # Market conditions
+    vix_today = cache.get("vix", 0)
+    spot_open = cache.get("open", 0)
+    spot_close = cache.get("spot", 0)
+    day_move = round(spot_close - spot_open, 0) if spot_open else 0
+    day_direction = "UP" if day_move > 0 else "DOWN" if day_move < 0 else "FLAT"
+    
+    # Analyze each trade — was signal direction correct?
+    for t in trades_today:
+        signal_type = t.get("otype", "")
+        correct_direction = (signal_type == "CE" and day_direction == "UP") or                            (signal_type == "PE" and day_direction == "DOWN")
+        t["direction_correct"] = correct_direction
+        t["exit_reason"] = t.get("reason", "UNKNOWN")
+        
+        # Update signal stats
+        key = f"{signal_type}_{t.get('exit_reason','')}"
+        if key not in learning["signal_stats"]:
+            learning["signal_stats"][key] = {"count":0,"wins":0,"total_pnl":0}
+        learning["signal_stats"][key]["count"] += 1
+        if t.get("pnl",0) > 0:
+            learning["signal_stats"][key]["wins"] += 1
+        learning["signal_stats"][key]["total_pnl"] += t.get("pnl",0)
+    
+    # Build day record
+    day_record = {
+        "date": today,
+        "trades": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "total_pnl": total_pnl,
+        "avg_win": avg_win,
+        "avg_loss": avg_loss,
+        "vix": vix_today,
+        "day_move_pts": day_move,
+        "day_direction": day_direction,
+        "trade_details": [{
+            "otype": t.get("otype"),
+            "pnl": t.get("pnl"),
+            "exit_reason": t.get("reason"),
+            "direction_correct": t.get("direction_correct"),
+            "vix_at_entry": t.get("vix_at_entry")
+        } for t in trades_today],
+        "lessons": generate_lessons(trades_today, day_direction, vix_today)
+    }
+    
+    learning["days"].insert(0, day_record)
+    if len(learning["days"]) > 90:  # keep 90 days
+        learning["days"] = learning["days"][:90]
+    
+    # Update pattern weights based on performance
+    update_pattern_weights(trades_today, vix_today, day_direction)
+    
+    save_learning()
+    print(f"[LEARN] Day review: {total} trades | {win_rate}% WR | P&L ₹{total_pnl:+,.0f}")
+    print(f"[LEARN] Lessons: {day_record['lessons']}")
+    return day_record
+
+def generate_lessons(trades, day_direction, vix):
+    """Generate human-readable lessons from today's trades."""
+    lessons = []
+    wins = [t for t in trades if t.get("pnl",0) > 0]
+    losses = [t for t in trades if t.get("pnl",0) < 0]
+    
+    # Lesson 1: Direction accuracy
+    correct = sum(1 for t in trades if t.get("direction_correct"))
+    if correct == len(trades):
+        lessons.append("All signals correct direction today")
+    elif correct == 0:
+        lessons.append(f"All signals wrong direction — market was {day_direction}, need to improve trend detection")
+    else:
+        lessons.append(f"{correct}/{len(trades)} signals correct direction")
+    
+    # Lesson 2: Exit quality
+    sl_hits = sum(1 for t in losses if "STOP LOSS" in t.get("reason",""))
+    if sl_hits > 1:
+        lessons.append(f"SL hit {sl_hits} times — consider wider stops on VIX {vix:.0f} days")
+    
+    early_exits = sum(1 for t in wins if "RSI" in t.get("reason","") or "TRAIL" in t.get("reason",""))
+    if early_exits > 0:
+        lessons.append(f"Brain exited {early_exits} trade(s) early — check if more profit was available")
+    
+    # Lesson 3: VIX context
+    if vix > 22:
+        lessons.append(f"High VIX day ({vix:.1f}) — volatile conditions, wider SL needed")
+    
+    return lessons
+
+def update_pattern_weights(trades, vix, day_direction):
+    """Adjust signal weights based on what worked today."""
+    for t in trades:
+        otype = t.get("otype","")
+        exit_reason = t.get("reason","")
+        pnl = t.get("pnl",0)
+        vix_bucket = "high" if vix>22 else "normal"
+        
+        # Build pattern key
+        direction_match = (otype=="CE" and day_direction=="UP") or (otype=="PE" and day_direction=="DOWN")
+        pattern_key = f"{vix_bucket}_{otype}_{direction_match}"
+        
+        if pattern_key not in learning["pattern_weights"]:
+            learning["pattern_weights"][pattern_key] = 1.0
+        
+        # Winning trades increase weight, losing trades decrease
+        if pnl > 0:
+            learning["pattern_weights"][pattern_key] = min(2.0, 
+                learning["pattern_weights"][pattern_key] * 1.05)
+        else:
+            learning["pattern_weights"][pattern_key] = max(0.3,
+                learning["pattern_weights"][pattern_key] * 0.95)
+
+def get_learning_summary():
+    """Get summary of learning for API."""
+    if not learning["days"]:
+        return {"status": "No data yet", "days_recorded": 0}
+    
+    days = learning["days"]
+    total_trades = sum(d["trades"] for d in days)
+    total_wins = sum(d["wins"] for d in days)
+    total_pnl = sum(d["total_pnl"] for d in days)
+    overall_wr = round(total_wins/total_trades*100, 1) if total_trades > 0 else 0
+    
+    # Best and worst patterns
+    best_patterns = sorted(
+        [(k,v) for k,v in learning["pattern_weights"].items() if v > 1.0],
+        key=lambda x: x[1], reverse=True
+    )[:3]
+    worst_patterns = sorted(
+        [(k,v) for k,v in learning["pattern_weights"].items() if v < 1.0],
+        key=lambda x: x[1]
+    )[:3]
+    
+    return {
+        "status": "Active",
+        "days_recorded": len(days),
+        "total_trades": total_trades,
+        "overall_win_rate": overall_wr,
+        "total_pnl": total_pnl,
+        "recent_7_days": days[:7],
+        "best_patterns": best_patterns,
+        "worst_patterns": worst_patterns,
+        "signal_stats": learning["signal_stats"],
+        "latest_lessons": days[0]["lessons"] if days else []
+    }
+
+
 # Paper trading state
 paper = {
     "capital": 100000,
@@ -67,10 +279,10 @@ paper = {
 RULES = {
     "max_trades_per_day": 3,
     "max_daily_loss": 3000,
-    "no_trade_before": (9, 30),   # 9:30 AM IST
-    "no_trade_after": (14, 30),   # 2:30 PM IST
-    "min_gap_minutes": 15,         # min 15 min between trades
-    "min_confidence": 60,
+    "no_trade_before": (9, 20),   # 9:20 AM IST - catch opening moves
+    "no_trade_after": (15, 0),    # 3:00 PM IST
+    "min_gap_minutes": 15,
+    "min_confidence": 55,
 }
 
 def load_trades():
@@ -93,34 +305,55 @@ def save_trades():
         print(f"[TRADES] Save error: {e}")
 
 def estimate_premium(spot, strike, otype, vix):
-    """Estimate option premium using simplified Black-Scholes."""
+    """
+    Realistic BN option premium estimator.
+    Based on actual market observation:
+    - ATM options trade at roughly VIX/100 * spot * sqrt(DTE/365)
+    - Weekly expiry ~5 days out
+    - OTM drops exponentially
+    """
     import math
-    vol = (vix or 15) / 100
-    T = 7/365  # approximate days to expiry
+    vix_val = max(vix or 15, 12)
+    vol = vix_val / 100
+    DTE = 5 / 365  # weekly expiry ~5 days
     diff = abs(spot - strike)
     intrinsic = max(0, spot - strike) if otype == "CE" else max(0, strike - spot)
-    time_val = spot * vol * math.sqrt(T) * math.exp(-diff / (spot * 0.02 + 1))
-    return round(max(0.5, intrinsic + time_val), 2)
+    # Time value using simplified BSM
+    d = diff / (spot * vol * math.sqrt(DTE) + 1)
+    time_val = spot * vol * math.sqrt(DTE) * math.exp(-0.5 * d * d) * 0.4
+    premium = intrinsic + time_val
+    # Realistic bounds for BN options
+    # ATM should be ~100-400 depending on VIX
+    # OTM 200pts away should be ~20-80
+    premium = max(5.0, min(premium, 800.0))
+    return round(premium, 2)
 
 def check_exit(spot):
-    """Check if open trade should be exited."""
+    """Check if open trade should be exited using VIX-adjusted SL."""
     t = paper["open_trade"]
     if not t: return
     otype = t["otype"]
-    sl = t["sl"]
+    entry_spot = t["entry_spot"]
     t1 = t["t1"]
     t2 = t["t2"]
-    # Check SL
+    # Use VIX-adjusted SL width from trade record
+    sl_width = t.get("sl_width", 150)
+    vix = t.get("vix_at_entry", cache.get("vix", 20))
+    # Recalculate SL based on entry spot (not strike-based)
+    if otype == "CE":
+        sl = entry_spot - sl_width
+    else:
+        sl = entry_spot + sl_width
+    # Check exits
     hit_sl = (otype == "CE" and spot <= sl) or (otype == "PE" and spot >= sl)
     hit_t1 = (otype == "CE" and spot >= t1) or (otype == "PE" and spot <= t1)
     hit_t2 = (otype == "CE" and spot >= t2) or (otype == "PE" and spot <= t2)
     reason = None
-    exit_spot = spot
     if hit_t2: reason = "TARGET 2 HIT"
     elif hit_t1: reason = "TARGET 1 HIT"
-    elif hit_sl: reason = "STOP LOSS HIT"
+    elif hit_sl: reason = f"STOP LOSS HIT ({sl_width}pt SL)"
     if reason:
-        close_trade(exit_spot, reason)
+        close_trade(spot, reason)
 
 def open_trade(signal, spot, vix):
     """Open a new paper trade based on signal."""
@@ -169,18 +402,33 @@ def open_trade(signal, spot, vix):
     if not sl or not t1: return
     # VIX-adjusted position sizing
     # High VIX = smaller position, low VIX = normal position
+    # VIX-adjusted position sizing
     vix_factor = 1.0
-    if vix > 25: vix_factor = 0.5    # Half size in very volatile market
-    elif vix > 20: vix_factor = 0.7  # 70% size in elevated VIX
-    elif vix < 14: vix_factor = 1.2  # 120% size in calm market
+    if vix > 25: vix_factor = 0.5
+    elif vix > 20: vix_factor = 0.7
+    elif vix < 14: vix_factor = 1.2
+
+    # VIX-adjusted stop loss width (wider SL on high VIX days)
+    # High VIX = market is noisy = need wider SL to survive intraday swings
+    sl_width = 120  # default 120 points SL
+    if vix > 25: sl_width = 200   # very volatile - 200pt SL
+    elif vix > 20: sl_width = 160  # elevated - 160pt SL
+    elif vix < 14: sl_width = 80   # calm - tighter 80pt SL
+
+    # Override SL from signal with VIX-adjusted SL
+    if otype == "CE":
+        sl = spot - sl_width  # for calls, SL is below entry spot
+    else:
+        sl = spot + sl_width  # for puts, SL is above entry spot
 
     premium = estimate_premium(spot, strike, otype, vix)
     sl_premium = estimate_premium(sl, strike, otype, vix)
-    risk_per_lot = abs(premium - sl_premium) * 15  # 15 qty per lot
-    max_risk = paper["capital"] * 0.01 * vix_factor  # 1% of capital × VIX factor
+    risk_per_lot = abs(premium - sl_premium) * 15
+    if risk_per_lot <= 0: risk_per_lot = premium * 0.3 * 15
+    max_risk = paper["capital"] * 0.01 * vix_factor
     lots = max(1, int(max_risk / risk_per_lot)) if risk_per_lot > 0 else 1
-    lots = min(lots, 5)  # cap at 5 lots
-    print(f"[PAPER] VIX={vix} factor={vix_factor} max_risk=₹{max_risk:.0f} lots={lots}")
+    lots = min(lots, 3)  # cap at 3 lots for safety
+    print(f"[PAPER] VIX={vix} SL_width={sl_width}pts premium=₹{premium} risk_per_lot=₹{risk_per_lot:.0f} lots={lots}")
     cost = premium * 15 * lots
     if cost > paper["available"]: return  # not enough capital
     trade = {
@@ -194,6 +442,8 @@ def open_trade(signal, spot, vix):
         "sl": sl,
         "t1": t1,
         "t2": t2,
+        "sl_width": sl_width,
+        "vix_at_entry": vix,
         "lots": lots,
         "qty": lots * 15,
         "cost": round(cost, 2),
@@ -721,6 +971,14 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
     <div style="background:rgba(0,191,165,0.06);border:1px solid rgba(0,191,165,0.2);border-radius:5px;padding:10px 14px;font-size:9px;color:var(--teal);line-height:1.8">
       Rules: Max 3 trades/day | Stop if -3000 daily loss | Trade 9:30-14:30 IST | 15min gap between trades
     </div>
+
+    <!-- Phase 2 & 3: Learning Panel -->
+    <div class="card">
+      <div class="card-hd">🧠 AI LEARNING LOG<span id="learn-days" style="font-weight:400;color:var(--muted)">0 days</span></div>
+      <div id="learn-body" style="padding:10px 12px">
+        <div style="text-align:center;color:var(--muted);font-size:10px;padding:10px">Learning data builds up after market close each day</div>
+      </div>
+    </div>
   </div>
 </div>
 </div>
@@ -1054,10 +1312,10 @@ const TradeBrain = {
   // Config
   config: {
     quick_exit_candles: 3,      // if wrong direction for 3 candles → exit
-    trail_start_pts: 80,        // start trailing after 80pts profit
-    trail_distance: 50,         // trail by 50pts
+    trail_start_pts: 100,       // start trailing after 100pts profit
+    trail_distance: 60,         // trail by 60pts
     reversal_ema_flip: true,    // exit if EMA9 flips against trade
-    max_candles: 60,            // max 60 minutes in a trade
+    max_candles: 75,            // max 60 minutes in a trade
     profit_lock_pct: 0.5,       // lock 50% of profit when target1 hit
   },
 
@@ -1345,6 +1603,66 @@ async function fetchTrades(){
     const d = await res.json();
     renderTrades(d);
   }catch(e){}
+  // Also fetch learning data
+  try{
+    const lr = await fetch('/api/learning');
+    const ld = await lr.json();
+    renderLearning(ld);
+  }catch(e){}
+}
+
+function renderLearning(d){
+  const daysEl = document.getElementById('learn-days');
+  const bodyEl = document.getElementById('learn-body');
+  if(!daysEl||!bodyEl||!d) return;
+  if(!d.days_recorded){
+    daysEl.textContent='0 days';
+    bodyEl.innerHTML='<div style="text-align:center;color:var(--muted);font-size:10px;padding:10px">Learning data builds after market close each day</div>';
+    return;
+  }
+  daysEl.textContent = d.days_recorded+' days recorded';
+  const fc=n=>n>=0?'var(--green)':'var(--red)';
+  const fp=n=>(n>=0?'+':'')+Math.round(Math.abs(n)).toLocaleString('en-IN');
+  let html = '';
+  // Overall stats
+  html += '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-bottom:8px">'
+    + '<div style="background:var(--bg3);border-radius:3px;padding:6px 8px"><div style="font-size:7px;color:var(--muted)">OVERALL WR</div><div style="font-family:var(--cond);font-size:16px;font-weight:900;color:'+(d.overall_win_rate>=50?'var(--green)':'var(--red)')+'">'+d.overall_win_rate+'%</div></div>'
+    + '<div style="background:var(--bg3);border-radius:3px;padding:6px 8px"><div style="font-size:7px;color:var(--muted)">TOTAL TRADES</div><div style="font-family:var(--cond);font-size:16px;font-weight:900">'+d.total_trades+'</div></div>'
+    + '<div style="background:var(--bg3);border-radius:3px;padding:6px 8px"><div style="font-size:7px;color:var(--muted)">TOTAL P&L</div><div style="font-family:var(--cond);font-size:16px;font-weight:900;color:'+fc(d.total_pnl)+'">'+fp(d.total_pnl)+'</div></div>'
+    + '</div>';
+  // Latest lessons
+  if(d.latest_lessons&&d.latest_lessons.length){
+    html += '<div style="margin-bottom:8px"><div style="font-size:7px;color:var(--muted);letter-spacing:0.1em;margin-bottom:4px">LATEST LESSONS</div>';
+    d.latest_lessons.forEach(l=>{
+      html += '<div style="font-size:9px;color:var(--white);padding:3px 0;border-bottom:1px solid var(--bdr)">\u2192 '+l+'</div>';
+    });
+    html += '</div>';
+  }
+  // Recent days
+  if(d.recent_7_days&&d.recent_7_days.length){
+    html += '<div style="font-size:7px;color:var(--muted);letter-spacing:0.1em;margin-bottom:4px">LAST '+Math.min(7,d.recent_7_days.length)+' DAYS</div>';
+    d.recent_7_days.slice(0,5).forEach(day=>{
+      const wr_col = day.win_rate>=50?'var(--green)':'var(--red)';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--bdr)">'
+        + '<span style="font-size:8px;color:var(--muted)">'+day.date+'</span>'
+        + '<span style="font-size:8px;color:var(--muted)">'+day.trades+' trades</span>'
+        + '<span style="font-size:9px;font-weight:700;color:'+wr_col+'">'+day.win_rate+'%</span>'
+        + '<span style="font-size:9px;font-weight:700;font-family:var(--cond);color:'+fc(day.total_pnl)+'">'+fp(day.total_pnl)+'</span>'
+        + '<span style="font-size:7px;color:var(--muted)">VIX '+day.vix+'</span>'
+        + '</div>';
+    });
+  }
+  // Phase 3 pattern weights
+  if(d.best_patterns&&d.best_patterns.length){
+    html += '<div style="margin-top:8px;font-size:7px;color:var(--muted);letter-spacing:0.1em;margin-bottom:4px">PHASE 3 \u2014 LEARNED PATTERNS</div>';
+    d.best_patterns.forEach(p=>{
+      html += '<div style="font-size:8px;color:var(--green);padding:2px 0">\u2191 '+p[0]+' (weight: '+p[1].toFixed(2)+')</div>';
+    });
+    if(d.worst_patterns) d.worst_patterns.forEach(p=>{
+      html += '<div style="font-size:8px;color:var(--red);padding:2px 0">\u2193 '+p[0]+' (weight: '+p[1].toFixed(2)+')</div>';
+    });
+  }
+  bodyEl.innerHTML = html;
 }
 
 function renderTrades(d){
@@ -1426,7 +1744,8 @@ async function resetAccount(){
 
 function checkPaperTrade(sig){
   if(!sig || sig.signal==='WAIT') return;
-  const key = sig.signal+'_'+sig.strike+'_'+Math.round((sig.conf||65)/10);
+  const now5min = Math.floor(Date.now()/300000); // changes every 5 minutes
+  const key = sig.signal+'_'+sig.strike+'_'+now5min;
   if(key === lastSignalFired) return;
   const effectiveConf = sig.conf || (sig.signal!=='WAIT' ? 65 : 0);
   if(effectiveConf >= 55){
@@ -1953,6 +2272,20 @@ def candles_api():
 @app.route("/ping")
 def ping(): return "pong"
 
+@app.route("/api/learning")
+def learning_api():
+    """Phase 2 - Return learning summary and daily performance."""
+    return jsonify(get_learning_summary())
+
+@app.route("/api/learning/day")
+def learning_day():
+    """Get today's learning review manually."""
+    try:
+        review = end_of_day_review()
+        return jsonify(review or {"status": "No trades today"})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 @app.route("/api/trades")
 def trades_api():
     spot = cache.get("spot", 0)
@@ -1979,7 +2312,14 @@ def trades_signal():
     sig = data.get("signal")
     spot = cache.get("spot", 0)
     vix = cache.get("vix", 15)
-    print(f"[PAPER] Signal received: {sig} | Spot: {spot} | Conf: {data.get('conf',0)}")
+    conf = data.get('conf', 65)
+    otype = data.get('otype', 'CE')
+    # Phase 3: Apply adaptive confidence boost
+    boost = get_adaptive_confidence_boost(otype, vix)
+    adjusted_conf = conf + boost
+    data['conf'] = adjusted_conf
+    data['phase3_boost'] = boost
+    print(f"[PAPER] Signal: {sig} | Conf: {conf}% + boost {boost:+d}% = {adjusted_conf}% | Spot: {spot}")
     if sig in ("BUY", "SELL") and spot:
         open_trade(data, spot, vix)
     else:
@@ -2078,6 +2418,7 @@ if __name__ == "__main__":
     load_token()
     load_last_session()
     load_trades()
+    load_learning()
     if cache["authenticated"]:
         if is_market_open():
             print("Market open — fetching live prices...")
