@@ -277,12 +277,13 @@ paper = {
 
 # Trading rules
 RULES = {
-    "max_trades_per_day": 3,
-    "max_daily_loss": 3000,
-    "no_trade_before": (9, 20),   # 9:20 AM IST - catch opening moves
-    "no_trade_after": (15, 0),    # 3:00 PM IST
-    "min_gap_minutes": 15,
+    "max_trades_per_day": 20,      # effectively unlimited - signal based
+    "max_daily_loss_pct": 2.0,     # stop if 2% of capital lost in a day
+    "no_trade_before": (9, 20),    # 9:20 AM IST
+    "no_trade_after": (15, 0),     # 3:00 PM IST
+    "min_gap_minutes": 10,         # 10 min gap between trades
     "min_confidence": 55,
+    "max_daily_loss": 2000,        # ₹2000 max daily loss (2% of 1L)
 }
 
 def load_trades():
@@ -368,14 +369,17 @@ def open_trade(signal, spot, vix):
     if paper["daily"]["date"] != today_str:
         paper["daily"] = {"date": today_str, "trades": 0, "pnl": 0, "last_trade_time": 0}
 
-    # Rule: max trades per day
-    if paper["daily"]["trades"] >= RULES["max_trades_per_day"]:
-        print(f"[PAPER] Max trades ({RULES['max_trades_per_day']}) reached for today")
+    # Signal-based trading — no fixed limit, just daily loss protection
+    max_loss = paper["capital"] * (RULES.get("max_daily_loss_pct", 2.0) / 100)
+    if paper["daily"]["pnl"] <= -max_loss:
+        print(f"[PAPER] Daily loss limit reached — no more trades today")
         return
 
-    # Rule: max daily loss - just warn for paper trading, don't block
-    if paper["daily"]["pnl"] <= -RULES["max_daily_loss"]:
-        print(f"[PAPER] Daily loss warning: ₹{paper['daily']['pnl']:,.0f} - continuing for signal testing")
+    # Rule: max daily loss - 2% of capital
+    max_loss = paper["capital"] * (RULES.get("max_daily_loss_pct", 2.0) / 100)
+    if paper["daily"]["pnl"] <= -max_loss:
+        print(f"[PAPER] Daily loss limit hit: ₹{paper['daily']['pnl']:,.0f} / -₹{max_loss:.0f} — stopping for today")
+        return
 
     # Rule: trading hours
     cur_mins = now.hour * 60 + now.minute
@@ -969,7 +973,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
     </div>
     <div id="pt-daily" style="border:1px solid rgba(0,191,165,0.2);border-radius:5px;padding:8px 14px;font-size:9px;line-height:1.8;font-weight:700;letter-spacing:0.05em"></div>
     <div style="background:rgba(0,191,165,0.06);border:1px solid rgba(0,191,165,0.2);border-radius:5px;padding:10px 14px;font-size:9px;color:var(--teal);line-height:1.8">
-      Rules: Max 3 trades/day | Stop if -3000 daily loss | Trade 9:30-14:30 IST | 15min gap between trades
+      Signal-based trading | Stop if -2% daily loss | Trade 9:20-15:00 IST | 10min gap | No fixed trade limit
     </div>
 
     <!-- Phase 2 & 3: Learning Panel -->
@@ -1042,9 +1046,7 @@ async function fetchFromServer(){
     const d=await res.json();
     if(!d.authenticated){
       setConn(false,false,'');
-      document.getElementById('logtxt').textContent='NOT LOGGED IN - Open /login to authenticate Upstox';
-      document.getElementById('logtxt').style.color='var(--red)';
-      document.getElementById('logtxt').style.fontWeight='800';
+      showLoginAlert();
       return;
     }
     if(!d.spot||d.spot<30000)throw new Error('No valid price');
@@ -1063,17 +1065,13 @@ async function fetchFromServer(){
     document.getElementById('upd-ts').textContent=d.last_updated||'—';
     setConn(true,d.market_open!==false,d.last_session_time||'');
     log((d.using_last_session?'Last session \u00b7 ':'Live \u00b7 ')+'BN \u20b9'+d.spot.toLocaleString('en-IN')+' \u00b7 VIX '+d.vix+' \u00b7 '+(d.last_session_time||d.last_updated),d.using_last_session?null:true);
+    hideLoginAlert();
     renderAll();
     updateChartTick(d.spot,d.high,d.low);
   }catch(e){
     setConn(false,false,'');
     log('Server error: '+e.message,false);
-    // Show login warning if not authenticated
-    if(e.message.includes('No valid price')||e.message.includes('authenticated')){
-      document.getElementById('logtxt').textContent='TOKEN EXPIRED - Please login at /login';
-      document.getElementById('logtxt').style.color='var(--red)';
-      document.getElementById('logtxt').style.fontWeight='900';
-    }
+    showLoginAlert();
   }
 }
 
@@ -1520,8 +1518,37 @@ function updateBrainDisplay(result){
   el.textContent = 'BRAIN: '+(result.action||'HOLD')+' | '+pts+'pts | SL:'+Math.round(TradeBrain.trail_sl||0).toLocaleString('en-IN');
   el.style.color = pts>0?'var(--green)':pts<0?'var(--red)':'var(--muted)';
 }
+// Login alert system
+let loginAlertShown = false;
+function showLoginAlert(){
+  if(loginAlertShown) return;
+  loginAlertShown = true;
+  // Show prominent alert
+  let alert = document.getElementById('login-alert');
+  if(!alert){
+    alert = document.createElement('div');
+    alert.id = 'login-alert';
+    alert.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(6,10,16,0.95);z-index:500;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px';
+    alert.innerHTML = '<div style="font-size:40px;margin-bottom:16px">🔐</div>'
+      + '<div style="font-family:var(--cond);font-size:28px;font-weight:900;color:var(--orange);margin-bottom:10px">SESSION EXPIRED</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:24px;line-height:1.8">Upstox token expired.<br>Login takes 10 seconds.</div>'
+      + '<a href="/login" style="padding:14px 32px;background:var(--orange);color:#000;font-weight:900;font-size:16px;border-radius:4px;text-decoration:none;letter-spacing:0.08em;font-family:var(--cond)">LOGIN WITH UPSTOX →</a>'
+      + '<div style="margin-top:16px;font-size:9px;color:var(--dim)">After login, come back to this page</div>';
+    document.body.appendChild(alert);
+  }
+  alert.style.display = 'flex';
+}
+
+function hideLoginAlert(){
+  loginAlertShown = false;
+  const alert = document.getElementById('login-alert');
+  if(alert) alert.style.display = 'none';
+}
+
 // Boot
 fetchFromServer();setInterval(fetchFromServer,5000);
+// Auto reload every 4 hours to prevent stale cache
+setTimeout(()=>location.reload(), 4*60*60*1000);
 // Auto reload page every 4 hours to prevent stale cache
 setTimeout(()=>location.reload(), 4*60*60*1000);
 
