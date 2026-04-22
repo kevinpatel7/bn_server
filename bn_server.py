@@ -281,7 +281,7 @@ RULES = {
     "max_daily_loss_pct": 2.0,     # stop if 2% of capital lost in a day
     "no_trade_before": (9, 20),    # 9:20 AM IST
     "no_trade_after": (15, 0),     # 3:00 PM IST
-    "min_gap_minutes": 10,         # 10 min gap between trades
+    "min_gap_minutes": 5,   # 5 min gap on trending days         # 10 min gap between trades
     "min_confidence": 55,
     "max_daily_loss": 2000,        # ₹2000 max daily loss (2% of 1L)
 }
@@ -1154,7 +1154,7 @@ function computeSignal(cs, spot) {
   const meta={e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st};
 
   // ── STRONG TREND SIGNALS ──
-  if(behaviour.action==='BUY_CALL' && behaviour.strength>=58){
+  if(behaviour.action==='BUY_CALL' && behaviour.strength>=50){
     const conf=Math.min(92, behaviour.strength);
     return{...base,signal:'BUY',conf,gate:null,otype:'CE',
       entry:piv.R1,sl:Math.max(piv.S1, spot-150),t1:piv.R1,t2:piv.R2,t3:piv.R3,
@@ -1163,7 +1163,7 @@ function computeSignal(cs, spot) {
       regime_note:behaviour.reason};
   }
 
-  if(behaviour.action==='BUY_PUT' && behaviour.strength>=58){
+  if(behaviour.action==='BUY_PUT' && behaviour.strength>=50){
     const conf=Math.min(92, behaviour.strength);
     return{...base,signal:'SELL',conf,gate:null,otype:'PE',
       entry:piv.S1,sl:Math.min(piv.R1, spot+150),t1:piv.S1,t2:piv.S2,t3:piv.S3,
@@ -1173,6 +1173,15 @@ function computeSignal(cs, spot) {
   }
 
   // ── REVERSAL SIGNALS (catching turns) ──
+  if(behaviour.action==='WATCH_SHORT' && behaviour.strength>=45){
+    if(e9<e21 && spot<vw){
+      const conf=Math.min(78, behaviour.strength+10);
+      return{...base,signal:'SELL',conf,gate:null,otype:'PE',
+        entry:piv.S1,sl:spot+120,t1:piv.S1,t2:piv.S2,t3:piv.S3,
+        cl:{'Trending Bear':true,'Below VWAP':true,'EMA Bear':e9<e21},
+        bs:0,br:3,meta,behaviour:'TREND_CONTINUATION',regime_note:'Trend continuation entry'};
+    }
+  }
   if(behaviour.action==='WATCH_SHORT' && behaviour.strength>=50 && rs>65){
     const conf=Math.min(80, behaviour.strength+5);
     return{...base,signal:'SELL',conf,gate:null,otype:'PE',
@@ -1181,6 +1190,17 @@ function computeSignal(cs, spot) {
       bs:0,br:3,meta,behaviour:'REVERSAL_DOWN',regime_note:behaviour.reason};
   }
 
+  // On trending days fire on WATCH signals too
+  if(behaviour.action==='WATCH_LONG' && behaviour.strength>=45){
+    // Only if clear bull trend
+    if(e9>e21 && spot>vw){
+      const conf=Math.min(78, behaviour.strength+10);
+      return{...base,signal:'BUY',conf,gate:null,otype:'CE',
+        entry:piv.R1,sl:spot-120,t1:piv.R1,t2:piv.R2,t3:piv.R3,
+        cl:{'Trending Bull':true,'Above VWAP':true,'EMA Bull':e9>e21},
+        bs:3,br:0,meta,behaviour:'TREND_CONTINUATION',regime_note:'Trend continuation entry'};
+    }
+  }
   if(behaviour.action==='WATCH_LONG' && behaviour.strength>=50 && rs<35){
     const conf=Math.min(80, behaviour.strength+5);
     return{...base,signal:'BUY',conf,gate:null,otype:'CE',
