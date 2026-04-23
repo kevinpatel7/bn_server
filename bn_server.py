@@ -52,6 +52,41 @@ cache = {
 }
 LAST_SESSION_FILE = "last_session.json"
 TRADES_FILE = "paper_trades.json"
+JSONBIN_KEY = os.environ.get("JSONBIN_KEY", "")
+JSONBIN_BIN_ID = os.environ.get("JSONBIN_BIN_ID", "")
+
+def save_to_cloud(data):
+    """Save trades to JSONBin.io for persistence across restarts."""
+    if not JSONBIN_KEY or not JSONBIN_BIN_ID:
+        return False
+    try:
+        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
+        r = requests.put(url, json=data,
+            headers={"Content-Type":"application/json","X-Master-Key":JSONBIN_KEY},
+            timeout=10)
+        if r.status_code == 200:
+            print("[CLOUD] Trades saved to cloud")
+            return True
+    except Exception as e:
+        print(f"[CLOUD] Save error: {e}")
+    return False
+
+def load_from_cloud():
+    """Load trades from JSONBin.io on server start."""
+    if not JSONBIN_KEY or not JSONBIN_BIN_ID:
+        return None
+    try:
+        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
+        r = requests.get(url,
+            headers={"X-Master-Key":JSONBIN_KEY},
+            timeout=10)
+        if r.status_code == 200:
+            data = r.json().get("record", {})
+            print(f"[CLOUD] Trades loaded from cloud: {data.get('stats',{}).get('total',0)} trades")
+            return data
+    except Exception as e:
+        print(f"[CLOUD] Load error: {e}")
+    return None
 
 # ═══════════════════ PHASE 2 — END OF DAY LEARNING ═══════════════════
 LEARNING_FILE = "learning_log.json"
@@ -287,6 +322,17 @@ RULES = {
 }
 
 def load_trades():
+    # Try cloud first (survives Railway restarts)
+    cloud_data = load_from_cloud()
+    if cloud_data:
+        paper["trades"] = cloud_data.get("trades", [])
+        paper["stats"] = cloud_data.get("stats", {"total":0,"wins":0,"losses":0,"pnl":0})
+        paper["available"] = cloud_data.get("available", 100000)
+        paper["open_trade"] = cloud_data.get("open_trade", None)
+        paper["capital"] = cloud_data.get("capital", 100000)
+        print(f"[TRADES] Loaded {len(paper['trades'])} trades from cloud")
+        return
+    # Fallback to local file
     try:
         with open(TRADES_FILE) as f:
             data = json.load(f)
@@ -294,16 +340,20 @@ def load_trades():
             paper["stats"] = data.get("stats", {"total":0,"wins":0,"losses":0,"pnl":0})
             paper["available"] = data.get("available", 100000)
             paper["open_trade"] = data.get("open_trade", None)
-            print(f"[TRADES] Loaded {len(paper['trades'])} trades")
+            print(f"[TRADES] Loaded {len(paper['trades'])} trades from local")
     except: pass
 
 def save_trades():
+    data = {"trades": paper["trades"], "stats": paper["stats"],
+            "available": paper["available"], "open_trade": paper["open_trade"],
+            "capital": paper["capital"]}
     try:
         with open(TRADES_FILE, "w") as f:
-            json.dump({"trades": paper["trades"], "stats": paper["stats"],
-                       "available": paper["available"], "open_trade": paper["open_trade"]}, f)
+            json.dump(data, f)
     except Exception as e:
         print(f"[TRADES] Save error: {e}")
+    # Also save to cloud for persistence
+    threading.Thread(target=save_to_cloud, args=(data,), daemon=True).start()
 
 def estimate_premium(spot, strike, otype, vix):
     """
