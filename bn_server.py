@@ -1500,6 +1500,399 @@ const TradeBrain = {
 // Reads what market is doing RIGHT NOW and gives context
 
 function readMarketBehaviour(cs, spot, vix, pcr) {
+  if (cs.length < 5) return { behaviour: 'UNKNOWN', strength: 0, action: 'WAIT' };
+  const cl = cs.map(c => c.c);
+  const e9 = ema(cl, 9), e21 = ema(cl, 21);
+  const rs = rsi(cl, 14);
+  const vw = vwapCalc(cs);
+  const recent5 = cl.slice(-5).reduce((a,b)=>a+b,0)/5;
+  const prev5   = cl.slice(-10,-5).reduce((a,b)=>a+b,0)/5;
+  const momentum = prev5 > 0 ? ((recent5 - prev5) / prev5) * 100 : 0;
+  const ptMove = cl.length >= 10 ? cl[cl.length-1] - cl[cl.length-10] : cl[cl.length-1] - cl[0];
+  const recentVol = cs.slice(-5).reduce((a,c)=>a+(c.volume||1),0)/5;
+  const prevVol   = cs.slice(-10,-5).reduce((a,c)=>a+(c.volume||1),0)/5;
+  const volRising = recentVol > prevVol * 1.1;
+  const last5 = cs.slice(-5);
+  const bullCandles = last5.filter(c => c.c > c.o).length;
+  const bearCandles = last5.filter(c => c.c < c.o).length;
+  const strongBull  = last5.filter(c => c.c > c.o && (c.c-c.o) > (c.h-c.l)*0.4).length;
+  const strongBear  = last5.filter(c => c.c < c.o && (c.o-c.c) > (c.h-c.l)*0.4).length;
+  const emaBull = e9 > e21, emaBear = e9 < e21;
+  const aboveVwap = spot > vw, belowVwap = spot < vw;
+  let behaviour, strength, action, reason;
+  if (emaBull && aboveVwap && bullCandles >= 3 && ptMove > 50) {
+    behaviour = 'STRONG_UPTREND'; strength = Math.min(95, 55 + strongBull*8 + (volRising?10:0) + (ptMove>100?10:0));
+    action = 'BUY_CALL'; reason = '+'+Math.round(ptMove)+'pts | '+bullCandles+'/5 bull | EMA bull | Above VWAP';
+  } else if (emaBear && belowVwap && bearCandles >= 3 && ptMove < -50) {
+    behaviour = 'STRONG_DOWNTREND'; strength = Math.min(95, 55 + strongBear*8 + (volRising?10:0) + (ptMove<-100?10:0));
+    action = 'BUY_PUT'; reason = Math.round(ptMove)+'pts | '+bearCandles+'/5 bear | EMA bear | Below VWAP';
+  } else if (emaBull && aboveVwap && bullCandles >= 2) {
+    behaviour = 'MILD_UPTREND'; strength = 48 + strongBull*5 + (volRising?8:0);
+    action = 'WATCH_LONG'; reason = bullCandles+'/5 bull | EMA bull | Above VWAP';
+  } else if (emaBear && belowVwap && bearCandles >= 2) {
+    behaviour = 'MILD_DOWNTREND'; strength = 48 + strongBear*5 + (volRising?8:0);
+    action = 'WATCH_SHORT'; reason = bearCandles+'/5 bear | EMA bear | Below VWAP';
+  } else if (emaBull && bullCandles >= 3) {
+    behaviour = 'MILD_UPTREND'; strength = 42 + strongBull*5;
+    action = 'WATCH_LONG'; reason = bullCandles+'/5 bull | EMA bull (near VWAP)';
+  } else if (emaBear && bearCandles >= 3) {
+    behaviour = 'MILD_DOWNTREND'; strength = 42 + strongBear*5;
+    action = 'WATCH_SHORT'; reason = bearCandles+'/5 bear | EMA bear (near VWAP)';
+  } else if (rs > 72 && momentum < 0) {
+    behaviour = 'POSSIBLE_REVERSAL_DOWN'; strength = 52; action = 'WATCH_SHORT';
+    reason = 'RSI overbought '+Math.round(rs)+' | Momentum fading';
+  } else if (rs < 28 && momentum > 0) {
+    behaviour = 'POSSIBLE_REVERSAL_UP'; strength = 52; action = 'WATCH_LONG';
+    reason = 'RSI oversold '+Math.round(rs)+' | Momentum building';
+  } else {
+    behaviour = 'RANGING'; strength = 15; action = 'WAIT';
+    reason = 'Choppy — bull:'+bullCandles+' bear:'+bearCandles+' | No clear trend';
+  }
+  return { behaviour, strength, action, reason, momentum, rs, vwapDist:((spot-vw)/vw)*100, e9, e21, vw, ptMove, bullCandles, bearCandles };
+}
+function computeTrend(cs, spot) {
+  if (cs.length < 3) return null;
+  const cl = cs.map(c=>c.c);
+  const e9=ema(cl,9),e21=ema(cl,21),rs=rsi(cl,14),vw=vwapCalc(cs),st=supertrend(cs);
+  const slope=(cl[cl.length-1]-cl[Math.max(0,cl.length-6)])/6;
+  const bf=[['Above VWAP',spot>vw],['EMA9>EMA21',e9>e21],['Supertrend Bull',st.bull],['RSI>52',rs>52],['Trending Up',slope>5],['S&P+',S.sp500chg>0],['VIX<18',S.vix<18||S.vix===0],['Above Open',S.open>0&&spot>S.open]];
+  const brf=[['Below VWAP',spot<vw],['EMA9<EMA21',e9<e21],['Supertrend Bear',!st.bull],['RSI<48',rs<48],['Trending Down',slope<-5],['S&P-',S.sp500chg<0],['VIX>18',S.vix>18],['Below Open',S.open>0&&spot<S.open]];
+  const bs=bf.filter(f=>f[1]).length,br=brf.filter(f=>f[1]).length,net=bs-br;
+  let label,col,strat;
+  if(net>=5){label='STRONGLY BULLISH';col='var(--green)';strat='Strong uptrend — buy dips to VWAP';}
+  else if(net>=3){label='BULLISH';col='#66BB6A';strat='Bullish — buy pullbacks';}
+  else if(net>=1){label='MILDLY BULLISH';col='var(--teal)';strat='Cautious CE only';}
+  else if(net>=-1){label='SIDEWAYS';col='var(--yellow)';strat='Wait for breakout';}
+  else if(net>=-3){label='MILDLY BEARISH';col='#FFA040';strat='Cautious PE only';}
+  else if(net>=-5){label='BEARISH';col='#FF7043';strat='Sell rallies';}
+  else{label='STRONGLY BEARISH';col='var(--red)';strat='Strong downtrend — no long trades';}
+  return{label,col,pct:Math.round(bs/8*100),strat,bs,br,factors:bf.filter(f=>f[1]).map(f=>f[0]).join(' · ')||'—',meta:{e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st}};
+}
+
+function computeSignal(cs, spot) {
+  const piv = calcPivots(cs.length ? cs : []);
+  const atm = Math.round(spot/100)*100;
+  const base = {signal:'WAIT',conf:0,gate:'',strike:atm,otype:'-',entry:null,sl:null,
+    t1:piv.R1,t2:piv.R2,t3:piv.R3,pivots:piv,cl:{},bs:0,br:0,
+    meta:{e9:0,e21:0,rsi:50,vwap:S.vwap,st:{bull:S.change>=0}},behaviour:null};
+
+  if(cs.length < 10){base.gate='Building data... ('+cs.length+'/10 candles)';return base;}
+
+  const cl = cs.map(c=>c.c);
+  const e9=ema(cl,9),e21=ema(cl,21),rs=rsi(cl,14),vw=vwapCalc(cs),st=supertrend(cs);
+  const vix=S.vix||0;
+  const regime=detectMarketRegime(cs,spot,vix);
+  const behaviour=readMarketBehaviour(cs,spot,vix,S.pcr);
+
+  // IST time
+  const ist=new Date(Date.now()+5.5*3600000);
+  const hh=ist.getUTCHours(),mm=ist.getUTCMinutes();
+  const curMins=hh*60+mm;
+
+  // No trade in first 5 min or last 30 min
+  if(curMins < 9*60+20){base.gate='Pre-market — waiting for 9:20 AM';return base;}
+  if(curMins > 15*60){base.gate='Market closing — no new trades';return base;}
+
+  // Need minimum 10 candles of confirmed data
+  const meta={e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st};
+
+  // ── STRONG TREND SIGNALS ──
+  if(behaviour.action==='BUY_CALL' && behaviour.strength>=50){
+    const conf=Math.min(92, behaviour.strength);
+    return{...base,signal:'BUY',conf,gate:null,otype:'CE',
+      entry:piv.R1,sl:Math.max(piv.S1, spot-150),t1:piv.R1,t2:piv.R2,t3:piv.R3,
+      cl:{'Strong Uptrend':true,'Above VWAP':true,'EMA Bull':e9>e21,'Vol Confirmed':true},
+      bs:4,br:0,meta,behaviour:behaviour.behaviour,
+      regime_note:behaviour.reason};
+  }
+
+  if(behaviour.action==='BUY_PUT' && behaviour.strength>=50){
+    const conf=Math.min(92, behaviour.strength);
+    return{...base,signal:'SELL',conf,gate:null,otype:'PE',
+      entry:piv.S1,sl:Math.min(piv.R1, spot+150),t1:piv.S1,t2:piv.S2,t3:piv.S3,
+      cl:{'Strong Downtrend':true,'Below VWAP':true,'EMA Bear':e9<e21,'Vol Confirmed':true},
+      bs:0,br:4,meta,behaviour:behaviour.behaviour,
+      regime_note:behaviour.reason};
+  }
+
+  // ── REVERSAL SIGNALS (catching turns) ──
+  if(behaviour.action==='WATCH_SHORT' && behaviour.strength>=45){
+    if(e9<e21 && spot<vw){
+      const conf=Math.min(78, behaviour.strength+10);
+      return{...base,signal:'SELL',conf,gate:null,otype:'PE',
+        entry:piv.S1,sl:spot+120,t1:piv.S1,t2:piv.S2,t3:piv.S3,
+        cl:{'Trending Bear':true,'Below VWAP':true,'EMA Bear':e9<e21},
+        bs:0,br:3,meta,behaviour:'TREND_CONTINUATION',regime_note:'Trend continuation entry'};
+    }
+  }
+  if(behaviour.action==='WATCH_SHORT' && behaviour.strength>=50 && rs>65){
+    const conf=Math.min(80, behaviour.strength+5);
+    return{...base,signal:'SELL',conf,gate:null,otype:'PE',
+      entry:piv.S1,sl:spot+100,t1:piv.S1,t2:piv.S2,t3:piv.S3,
+      cl:{'RSI Overbought':rs>68,'Losing Momentum':true,'Reversal Setup':true},
+      bs:0,br:3,meta,behaviour:'REVERSAL_DOWN',regime_note:behaviour.reason};
+  }
+
+  // On trending days fire on WATCH signals too
+  if(behaviour.action==='WATCH_LONG' && behaviour.strength>=45){
+    // Only if clear bull trend
+    if(e9>e21 && spot>vw){
+      const conf=Math.min(78, behaviour.strength+10);
+      return{...base,signal:'BUY',conf,gate:null,otype:'CE',
+        entry:piv.R1,sl:spot-120,t1:piv.R1,t2:piv.R2,t3:piv.R3,
+        cl:{'Trending Bull':true,'Above VWAP':true,'EMA Bull':e9>e21},
+        bs:3,br:0,meta,behaviour:'TREND_CONTINUATION',regime_note:'Trend continuation entry'};
+    }
+  }
+  if(behaviour.action==='WATCH_LONG' && behaviour.strength>=50 && rs<35){
+    const conf=Math.min(80, behaviour.strength+5);
+    return{...base,signal:'BUY',conf,gate:null,otype:'CE',
+      entry:piv.R1,sl:spot-100,t1:piv.R1,t2:piv.R2,t3:piv.R3,
+      cl:{'RSI Oversold':rs<32,'Gaining Momentum':true,'Reversal Setup':true},
+      bs:3,br:0,meta,behaviour:'REVERSAL_UP',regime_note:behaviour.reason};
+  }
+
+  // ── STANDARD SIGNALS (normal market) ──
+  const bull={'Price>VWAP':spot>vw,'EMA9>EMA21':e9>e21,'Supertrend Bull':st.bull,
+    'RSI 45-65':rs>=45&&rs<=65,'Momentum Up':regime.momentumPct>0.1,
+    'PCR>0.9':S.pcr>0.9,'RSI>50':rs>50,'S&P+':S.sp500chg>0};
+  const bear={'Price<VWAP':spot<vw,'EMA9<EMA21':e9<e21,'Supertrend Bear':!st.bull,
+    'RSI 35-55':rs>=35&&rs<=55,'Momentum Down':regime.momentumPct<-0.1,
+    'PCR<1.0':S.pcr<1.0,'RSI<50':rs<50,'S&P-':S.sp500chg<0};
+  const bs=Object.values(bull).filter(Boolean).length;
+  const br=Object.values(bear).filter(Boolean).length;
+  const threshold = vix>20 ? 5 : 4;
+  let raw='WAIT',conds=bs>=br?bull:bear;
+  if(bs>=threshold){raw='BUY';conds=bull;}
+  else if(br>=threshold){raw='SELL';conds=bear;}
+  const score=raw==='BUY'?bs:raw==='SELL'?br:Math.max(bs,br);
+  const conf=raw==='WAIT'?Math.round(score/8*100):Math.min(88,58+score*5);
+  if(conf<60&&raw!=='WAIT'){base.gate='Confidence '+conf+'% below threshold';return base;}
+  return{signal:raw,raw,conf,score,gate:null,strike:atm,
+    otype:raw==='BUY'?'CE':raw==='SELL'?'PE':'-',
+    entry:raw==='BUY'?piv.R1:raw==='SELL'?piv.S1:null,
+    sl:raw==='BUY'?Math.max(piv.S1,spot-150):raw==='SELL'?Math.min(piv.R1,spot+150):null,
+    t1:raw==='BUY'?piv.R1:piv.S1,t2:raw==='BUY'?piv.R2:piv.S2,
+    t3:raw==='BUY'?piv.R3:piv.S3,
+    pivots:piv,cl:conds,bs,br,meta,behaviour:behaviour.behaviour,
+    regime_note:behaviour.reason};
+}
+
+
+function renderAll(){if(!S.spot)return;const f=n=>Math.round(n).toLocaleString('en-IN');const cc=n=>n>=0?'up':'dn';const fp=n=>(n>=0?'+':'')+n.toFixed(2)+'%';const el=document.getElementById('spot-big');el.textContent='₹'+f(S.spot);el.className=cc(S.change);el.style.fontFamily='var(--cond)';el.style.fontSize='32px';el.style.fontWeight='900';document.getElementById('chg').textContent=(S.change>=0?'▲':'▼')+Math.abs(S.change).toFixed(2)+' ('+Math.abs(S.pct).toFixed(2)+'%)';document.getElementById('chg').className=cc(S.change);document.getElementById('d-o').textContent=f(S.open);document.getElementById('d-h').textContent=f(S.high);document.getElementById('d-l').textContent=f(S.low);document.getElementById('d-vw').textContent=f(S.vwap);document.getElementById('g-vix').textContent=S.vix?S.vix.toFixed(1):'—';document.getElementById('g-vix').className='g-v '+(S.vix>20?'dn':S.vix>15?'neu':'up');document.getElementById('g-pcr').textContent=S.pcr.toFixed(2);document.getElementById('g-pcr').className='g-v '+(S.pcr>=1.2?'up':S.pcr>=0.9?'neu':'dn');['g-sp','g-cr','g-gd'].forEach((id,i)=>{const v=[S.sp500chg,S.crudechg,S.goldchg][i];document.getElementById(id).textContent=v?fp(v):'—';document.getElementById(id).className='g-v '+cc(v);});document.getElementById('g-usd').textContent=S.usdinr?S.usdinr.toFixed(1):'—';const oc=buildOC(S.spot);renderOC(oc);renderMinis(oc);const t=computeTrend(S.candles,S.spot);renderTrend(t);const sig=computeSignal(S.candles,S.spot);S.signal=sig;renderSignal(sig);checkPaperTrade(sig);
+  // TradeBrain tick - monitor open trade every price update
+  if(TradeBrain.active && S.candles.length>=3){
+    const cl2=S.candles.map(c=>c.c);
+    const e9t=ema(cl2,9),e21t=ema(cl2,21),vwt=vwapCalc(S.candles),rst=rsi(cl2,14);
+    const result=TradeBrain.tick(S.spot,S.candles,e9t,e21t,vwt,rst);
+    if(result&&result.action==='EXIT'){
+      // Signal server to close trade
+      fetch('/api/trades/close_reason',{method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({reason:result.reason,spot:S.spot})
+      }).then(()=>fetchTrades());
+      TradeBrain.reset();
+      toast('Trade exited: '+result.reason);
+    }
+    updateBrainDisplay(result);
+  }renderInds(sig?.meta||t?.meta);renderSR(sig?.pivots,S.spot);if(prevSig&&prevSig!=='WAIT'&&sig?.signal!==prevSig&&sig?.signal!=='WAIT')toast('Signal: '+prevSig+' → '+sig.signal);if((!prevSig||prevSig==='WAIT')&&sig?.signal!=='WAIT'){ariaExplain(sig);goTab(0);}prevSig=sig?.signal;}
+
+function renderTrend(t){if(!t){document.getElementById('tl').textContent=S.candles.length<3?'Collecting...':'—';return;}document.getElementById('tl').textContent=t.label;document.getElementById('tl').style.color=t.col;document.getElementById('tf2').style.width=t.pct+'%';document.getElementById('tf2').style.background=t.col;document.getElementById('t-fac').textContent='Bull '+t.bs+'/8 · Bear '+t.br+'/8 · '+t.factors;document.getElementById('t-str').textContent=t.strat;document.getElementById('t-str').style.background=t.col+'22';document.getElementById('t-str').style.color=t.col;}
+function renderSignal(sig){const body=document.getElementById('sig-body');const ist=new Date(Date.now()+5.5*3600000);document.getElementById('sig-ts').textContent=`${String(ist.getUTCHours()).padStart(2,'0')}:${String(ist.getUTCMinutes()).padStart(2,'0')} IST`;if(!sig||sig.signal==='WAIT'){const m=sig?.gate||(sig?`Bull ${sig.bs}/8 · Bear ${sig.br}/8`:'Waiting...');body.innerHTML=`<div class="sw"><div style="font-size:32px;margin-bottom:6px">⏸</div><div class="sw-t">WAIT</div><div class="sw-m">${m}${sig&&sig.bs+sig.br>0?`<br><br><span style="color:var(--dim)">Bull: ${sig.bs}/8 · Bear: ${sig.br}/8 · Conf: ${sig.conf}%</span>`:''}</div></div>`;return;}const isBuy=sig.signal==='BUY';const col=isBuy?'var(--green)':'var(--red)';const bg=isBuy?'rgba(0,230,118,0.04)':'rgba(255,23,68,0.04)';const f=n=>n?Math.round(n).toLocaleString('en-IN'):'—';const conds=Object.entries(sig.cl);const met=conds.filter(([,v])=>v).length;body.innerHTML=`<div class="sig-ac" style="background:${bg}"><div class="sv" style="color:${col}">${isBuy?'BUY CALL':'BUY PUT'}</div><div class="ss" style="color:${col}">${isBuy?'BULLISH':'BEARISH'} SETUP</div><div class="sb" style="background:${col}18;color:${col};border:1px solid ${col}44">${sig.strike} ${sig.otype} · WEEKLY</div>${sig.behaviour?`<div style="font-size:8px;color:var(--muted);padding:4px 16px;background:var(--bg3)">${sig.behaviour}${sig.regime_note?" — "+sig.regime_note:""}</div>`:""}}</div><div class="lg"><div class="lc" style="border-color:var(--teal)"><div class="lc-l">ENTRY</div><div class="lc-v" style="color:var(--teal)">₹${f(sig.entry)}</div></div><div class="lc" style="border-color:var(--red)"><div class="lc-l">STOP LOSS</div><div class="lc-v" style="color:var(--red)">₹${f(sig.sl)}</div></div><div class="lc" style="border-color:var(--green)"><div class="lc-l">TARGET 1</div><div class="lc-v" style="color:var(--green)">₹${f(sig.t1)}</div></div><div class="lc" style="border-color:var(--yellow)"><div class="lc-l">TARGET 2</div><div class="lc-v" style="color:var(--yellow)">₹${f(sig.t2)}</div></div></div><div class="cr"><span style="font-size:9px;color:var(--muted);flex-shrink:0">CONFIDENCE</span><div class="cb"><div class="cf" style="width:${sig.conf}%;background:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'}"></div></div><span style="font-size:15px;font-weight:900;font-family:var(--cond);color:${sig.conf>=75?'var(--green)':sig.conf>=60?'var(--yellow)':'var(--red)'};flex-shrink:0">${sig.conf}%</span><span style="font-size:9px;color:var(--muted);flex-shrink:0">${met}/${conds.length}</span></div><div class="cds">${conds.map(([k,v])=>`<span class="cd" style="background:${v?'rgba(0,230,118,0.1)':'rgba(74,96,112,0.15)'};color:${v?'var(--green)':'var(--muted)'}">${v?'✓':'✗'} ${k}</span>`).join('')}</div><div class="sig-foot">⚠ Exit if BN ${isBuy?'closes below':'closes above'} ₹${f(sig.sl)} · T3: ₹${f(sig.t3)}</div>`;}
+function renderInds(meta){if(!meta)return;document.getElementById('i-e9').textContent=meta.e9?.toLocaleString('en-IN')||'—';document.getElementById('i-e9').style.color=meta.e9>meta.e21?'var(--green)':'var(--red)';document.getElementById('i-e21').textContent=meta.e21?.toLocaleString('en-IN')||'—';document.getElementById('i-rsi').textContent=meta.rsi||'—';document.getElementById('i-rsi').style.color=meta.rsi>65?'var(--red)':meta.rsi<35?'var(--green)':meta.rsi>50?'var(--green)':'var(--orange)';document.getElementById('i-rsib').style.width=(meta.rsi||50)+'%';document.getElementById('i-rsib').style.background=meta.rsi>70?'var(--red)':meta.rsi<30?'var(--green)':'var(--yellow)';document.getElementById('i-vw').textContent=meta.vwap?.toLocaleString('en-IN')||'—';document.getElementById('i-vw').style.color=S.spot>meta.vwap?'var(--green)':'var(--red)';document.getElementById('i-st').textContent=meta.st?.bull?'BULL ▲':'BEAR ▼';document.getElementById('i-st').style.color=meta.st?.bull?'var(--green)':'var(--red)';document.getElementById('i-pcr').textContent=S.pcr.toFixed(2);document.getElementById('i-pcr').style.color=S.pcr>=1.2?'var(--green)':S.pcr>=0.9?'var(--teal)':'var(--red)';}
+function renderMinis(oc){if(!oc)return;const pcr=oc.pcr;const pEl=document.getElementById('m-pcr');pEl.textContent=pcr.toFixed(2);pEl.style.color=pcr>=1.3?'var(--green)':pcr>=1.0?'var(--teal)':pcr>=0.7?'var(--yellow)':'var(--red)';document.getElementById('m-bias').textContent=pcr>=1.2?'Bullish ↑':pcr>=0.9?'Neutral':'Bearish ↓';document.getElementById('m-mp').textContent='₹'+oc.maxPain.toLocaleString('en-IN');document.getElementById('m-oi').textContent=((oc.totCE+oc.totPE)/100000).toFixed(1)+'L';const vix=S.vix;document.getElementById('m-vix').textContent=vix?vix.toFixed(1):'—';document.getElementById('m-vix').style.color=vix<14?'var(--green)':vix<18?'var(--teal)':vix<22?'var(--yellow)':'var(--red)';document.getElementById('m-vixs').textContent=vix?vix<14?'CALM':vix<18?'NORMAL':vix<22?'ELEVATED':'DANGER':'—';}
+function renderOC(oc){if(!oc)return;const spot=S.spot,atm=Math.round(spot/100)*100;const maxOI=Math.max(...oc.strikes.map(s=>Math.max(oc.ce[s]?.oi||0,oc.pe[s]?.oi||0)),1);let html='';for(const s of oc.strikes){const c=oc.ce[s]||{ltp:0,oi:0},p=oc.pe[s]||{ltp:0,oi:0};const isATM=Math.abs(s-spot)<50;const cw=Math.round((c.oi/maxOI)*28),pw=Math.round((p.oi/maxOI)*28);const oiK=n=>n>=100000?(n/100000).toFixed(1)+'L':(n/1000).toFixed(0)+'K';html+=`<tr${isATM?' class="atm"':''}><td style="text-align:left;color:var(--green)">₹${c.ltp}<span class="oib" style="width:${cw}px;background:var(--teal)"></span></td><td style="color:var(--teal)">${oiK(c.oi)}</td><td class="c" style="font-weight:900${isATM?';color:var(--yellow)':''}">${s.toLocaleString('en-IN')}${isATM?'<br><span style="font-size:6px;color:var(--yellow)">ATM</span>':''}</td><td style="color:var(--orange)">${oiK(p.oi)}</td><td style="text-align:right;color:var(--red)">₹${p.ltp}<span class="oib" style="width:${pw}px;background:var(--orange)"></span></td></tr>`;}document.getElementById('oc-body').innerHTML=html;}
+function renderSR(piv,spot){if(!piv||!spot)return;const f=n=>Math.round(n).toLocaleString('en-IN');const di=n=>{const d=Math.round(n-spot);return(d>=0?'+':'')+d;};const c=n=>n>spot?'var(--red)':n<spot?'var(--green)':'var(--yellow)';const lvls=[{n:'R3',v:piv.R3},{n:'R2',v:piv.R2},{n:'R1',v:piv.R1},null,{n:'S1',v:piv.S1},{n:'S2',v:piv.S2},{n:'S3',v:piv.S3},{n:'PVT',v:piv.P,sp:true}];document.getElementById('sr-list').innerHTML=lvls.map(l=>l?`<div class="sr-row${l.sp?' sr-spot':''}"><span class="sr-n" style="color:${l.sp?'var(--yellow)':'var(--muted)'}">${l.n}</span><span class="sr-v" style="color:${c(l.v)}">₹${f(l.v)}</span><span class="sr-d" style="color:${c(l.v)}">${di(l.v)}</span></div>`:`<div class="sr-row sr-spot"><span class="sr-n" style="color:var(--white);font-weight:700">SPOT</span><span class="sr-v" style="color:var(--white)">₹${f(spot)}</span><span class="sr-d" style="color:var(--muted)">current</span></div>`).join('');}
+
+const NEWS=[{sev:'HIGH',src:'NSE',body:'BN weekly expiry — max pain tracking ATM'},{sev:'MED',src:'RBI',body:'RBI holds at 6.5% — neutral stance'},{sev:'HIGH',src:'ET Mkts',body:'FIIs sold ₹2,840 Cr in index futures'},{sev:'MED',src:'Reuters',body:'Crude near $68.50 ahead of OPEC+'},{sev:'HIGH',src:'Bloomberg',body:'Fed signals higher-for-longer — DXY rising'},];
+(function(){const sC={HIGH:'var(--red)',MED:'var(--yellow)',LOW:'var(--teal)'};document.getElementById('news-list').innerHTML=NEWS.map(n=>`<div class="ni"><div class="ni-top"><span class="ni-sev" style="background:${sC[n.sev]}22;color:${sC[n.sev]}">${n.sev}</span><span class="ni-src">${n.src}</span></div><div class="ni-body">${n.body}</div></div>`).join('');})();
+
+['rc-c','rc-e','rc-s'].forEach(id=>document.getElementById(id).addEventListener('input',()=>{const cap=parseFloat(document.getElementById('rc-c').value)||50000;const ent=parseFloat(document.getElementById('rc-e').value);const sl=parseFloat(document.getElementById('rc-s').value);if(!ent||!sl||ent<=sl){document.getElementById('rc-lots').textContent='—';document.getElementById('rc-mr').textContent='—';return;}const lots=Math.max(1,Math.min(10,Math.floor(cap*0.01/((ent-sl)*15))));document.getElementById('rc-lots').textContent=lots+(lots===1?' lot':' lots');document.getElementById('rc-mr').textContent='₹'+(lots*(ent-sl)*15).toLocaleString('en-IN');}));
+
+function toast(m){document.getElementById('toast-msg').textContent=m;const t=document.getElementById('toast');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),4500);}
+
+const ARIA_SYS=`You are ARIA, Bank Nifty options trading assistant. Be brief (2-4 sentences), direct. No markdown.`;
+async function callAria(msg){if(!ariaKey){ariaKey=prompt('Anthropic API key for ARIA\\n(console.anthropic.com)\\nLeave blank to skip:');if(!ariaKey)return'ARIA not connected.';}const ctx=`BN ₹${S.spot||'—'} | PCR ${S.pcr.toFixed(2)} | Signal: ${S.signal?.signal||'WAIT'} ${S.signal?.conf||0}% | RSI ${S.signal?.meta?.rsi||'—'}`;ariaHist.push({role:'user',content:`[${ctx}]\\n${msg}`});if(ariaHist.length>10)ariaHist=ariaHist.slice(-10);const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':ariaKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:200,system:ARIA_SYS,messages:ariaHist})});const d=await res.json();if(d.error)throw new Error(d.error.message);const r=d.content?.[0]?.text||'Sorry.';ariaHist.push({role:'assistant',content:r});return r;}
+function addMsg(html,type){const box=document.getElementById('ai-msgs');const el=document.createElement('div');el.className='msg '+type;el.innerHTML=html;box.appendChild(el);box.scrollTop=box.scrollHeight;return el;}
+async function sendAI(){const inp=document.getElementById('ai-in');const msg=inp.value.trim();if(!msg)return;inp.value='';document.getElementById('ai-btn').disabled=true;addMsg(msg,'user');const td=addMsg('<div class="typing"><span></span><span></span><span></span></div>','bot');try{const r=await callAria(msg);td.className='msg bot';td.innerHTML=r;}catch(e){td.className='msg bot';td.innerHTML='Error: '+e.message;}document.getElementById('ai-btn').disabled=false;}
+function ariaExplain(sig){if(!sig||sig.signal==='WAIT')return;const isBuy=sig.signal==='BUY';addMsg(`${isBuy?'🟢':'🔴'} <strong>${isBuy?'BUY CALL':'BUY PUT'}</strong> — ${sig.strike} ${sig.otype} · ${sig.conf}% conf<br>Entry: ₹${sig.entry?.toLocaleString('en-IN')||'—'} · SL: ₹${sig.sl?.toLocaleString('en-IN')||'—'}`,'bot');}
+
+// Real-time chart tick update
+function updateChartTick(spot, high, low) {
+  if (!cSeries || !lwC || !spot) return;
+  try {
+    const IST_OFFSET = 19800;
+    // Get current minute timestamp in IST
+    const now = Math.floor(Date.now() / 1000) + IST_OFFSET;
+    const minuteTs = now - (now % 60);
+    // Get last candle
+    const last = window._lastCandle;
+    if (!last) return;
+    // Update current minute candle
+    const updated = {
+      time: minuteTs,
+      open: last.time === minuteTs ? last.open : spot,
+      high: last.time === minuteTs ? Math.max(last.high, high || spot) : spot,
+      low: last.time === minuteTs ? Math.min(last.low, low || spot) : spot,
+      close: spot,
+    };
+    window._lastCandle = updated;
+    cSeries.update(updated);
+    // Also update EMA/VWAP lines with new close
+    if (e9S && window._chartCandles) {
+      const candles = window._chartCandles;
+      // Replace or append current candle
+      const idx = candles.findIndex(c => c.time === minuteTs);
+      if (idx >= 0) candles[idx] = {...updated, volume: candles[idx].volume || 0};
+      else candles.push({...updated, volume: 0});
+      const ema9 = calcEMA(candles, 9);
+      const ema21 = calcEMA(candles, 21);
+      const vwap = calcVWAP(candles);
+      if (ema9.length) e9S.update(ema9[ema9.length-1]);
+      if (ema21.length) e21S.update(ema21[ema21.length-1]);
+      if (vwap.length) vwS.update(vwap[vwap.length-1]);
+    }
+  } catch(e) { /* silent */ }
+}
+
+// ═══════════════════ TRADE BRAIN v1 ═══════════════════
+// Monitors open trades every tick, manages exits dynamically
+// Detects reversals, trails stops, locks profits
+
+const TradeBrain = {
+  // State
+  active: false,
+  entry_spot: 0,
+  direction: null,      // 'LONG' or 'SHORT'
+  trail_sl: 0,
+  highest_profit: 0,
+  candles_in_trade: 0,
+  last_check: 0,
+  log: [],
+
+  // Config
+  config: {
+    quick_exit_candles: 3,      // if wrong direction for 3 candles → exit
+    trail_start_pts: 100,       // start trailing after 100pts profit
+    trail_distance: 60,         // trail by 60pts
+    reversal_ema_flip: true,    // exit if EMA9 flips against trade
+    max_candles: 75,            // max 60 minutes in a trade
+    profit_lock_pct: 0.5,       // lock 50% of profit when target1 hit
+  },
+
+  reset() {
+    this.active = false;
+    this.entry_spot = 0;
+    this.direction = null;
+    this.trail_sl = 0;
+    this.highest_profit = 0;
+    this.candles_in_trade = 0;
+    this.log = [];
+  },
+
+  start(direction, entry_spot, initial_sl) {
+    this.active = true;
+    this.direction = direction;
+    this.entry_spot = entry_spot;
+    this.trail_sl = initial_sl;
+    this.highest_profit = 0;
+    this.candles_in_trade = 0;
+    this.log = [`ENTERED ${direction} @ ${Math.round(entry_spot).toLocaleString('en-IN')}`];
+    console.log('[BRAIN] Trade started:', direction, entry_spot);
+  },
+
+  // Called every tick with current market data
+  tick(spot, cs, e9, e21, vwap, rsiVal) {
+    if (!this.active) return null;
+
+    this.candles_in_trade++;
+    const pts = this.direction === 'LONG' ? spot - this.entry_spot : this.entry_spot - spot;
+    const is_profit = pts > 0;
+
+    // Track highest profit for trailing
+    if (pts > this.highest_profit) {
+      this.highest_profit = pts;
+    }
+
+    // ── EXIT CONDITIONS ──
+
+    // 1. Max time in trade
+    if (this.candles_in_trade >= this.config.max_candles) {
+      return this._exit('TIME LIMIT - 60min max', spot);
+    }
+
+    // 2. Trailing stop loss
+    if (this.highest_profit >= this.config.trail_start_pts) {
+      const new_sl = this.direction === 'LONG'
+        ? spot - this.config.trail_distance
+        : spot + this.config.trail_distance;
+      // Only move SL in profitable direction
+      if (this.direction === 'LONG' && new_sl > this.trail_sl) {
+        this.trail_sl = new_sl;
+        this.log.push(`Trail SL → ${Math.round(new_sl).toLocaleString('en-IN')}`);
+      }
+      if (this.direction === 'SHORT' && new_sl < this.trail_sl) {
+        this.trail_sl = new_sl;
+        this.log.push(`Trail SL → ${Math.round(new_sl).toLocaleString('en-IN')}`);
+      }
+    }
+
+    // 3. Stop loss hit (including trailing)
+    const sl_hit = this.direction === 'LONG'
+      ? spot <= this.trail_sl
+      : spot >= this.trail_sl;
+    if (sl_hit) {
+      const reason = this.highest_profit >= this.config.trail_start_pts
+        ? 'TRAIL STOP HIT' : 'STOP LOSS HIT';
+      return this._exit(reason, spot);
+    }
+
+    // 4. EMA reversal detection
+    if (this.config.reversal_ema_flip && this.candles_in_trade > 5) {
+      const ema_against = this.direction === 'LONG' ? e9 < e21 : e9 > e21;
+      const below_vwap_for_long = this.direction === 'LONG' && spot < vwap;
+      const above_vwap_for_short = this.direction === 'SHORT' && spot > vwap;
+      if (ema_against && (below_vwap_for_long || above_vwap_for_short) && pts < 0) {
+        return this._exit('REVERSAL DETECTED - EMA+VWAP flipped', spot);
+      }
+    }
+
+    // 5. Strong reversal candles (3 consecutive against trade)
+    if (cs.length >= 3) {
+      const last3 = cs.slice(-3);
+      const all_against_long = this.direction === 'LONG' &&
+        last3.every(c => c.c < c.o);  // 3 red candles
+      const all_against_short = this.direction === 'SHORT' &&
+        last3.every(c => c.c > c.o);  // 3 green candles
+      if ((all_against_long || all_against_short) && pts < -30) {
+        return this._exit('3 CONSECUTIVE REVERSAL CANDLES', spot);
+      }
+    }
+
+    // 6. RSI extreme reversal
+    if (this.direction === 'LONG' && rsiVal > 75 && pts > 50) {
+      return this._exit('RSI OVERBOUGHT - TAKING PROFIT', spot);
+    }
+    if (this.direction === 'SHORT' && rsiVal < 25 && pts > 50) {
+      return this._exit('RSI OVERSOLD - TAKING PROFIT', spot);
+    }
+
+    return { action: 'HOLD', pts, trail_sl: this.trail_sl, log: this.log };
+  },
+
+  _exit(reason, spot) {
+    const pts = this.direction === 'LONG' ? spot - this.entry_spot : this.entry_spot - spot;
+    this.log.push(`EXIT: ${reason} @ ${Math.round(spot).toLocaleString('en-IN')} (${pts>=0?'+':''}${Math.round(pts)}pts)`);
+    console.log('[BRAIN] Exit:', reason, 'pts:', Math.round(pts));
+    this.active = false;
+    return { action: 'EXIT', reason, spot, pts, log: this.log };
+  }
+};
+
+// ═══════════════════ MARKET BEHAVIOUR READER ═══════════════════
+// Reads what market is doing RIGHT NOW and gives context
+
+function readMarketBehaviour(cs, spot, vix, pcr) {
   if (cs.length < 10) return { behaviour: 'UNKNOWN', strength: 0, action: 'WAIT' };
 
   const cl = cs.map(c => c.c);
