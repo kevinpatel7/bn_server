@@ -1099,9 +1099,18 @@ async function fetchFromServer(){
       showLoginAlert();
       return;
     }
-    if(!d.spot||d.spot<30000)throw new Error('No valid price');
-    const prev=S.spot;
-    S.spot=d.spot;S.change=d.change;S.pct=d.pct;
+    // Use last session data when market closed
+    const displaySpot = d.spot||0;
+    const lastSpot = d.last_session ? (d.last_session.spot||0) : 0;
+    const effectiveSpot = displaySpot >= 30000 ? displaySpot : lastSpot;
+    if(effectiveSpot < 30000 && !d.last_session){
+      setConn(true, false, '');
+      log('Market closed - no price data yet', null);
+      return;
+    }
+    if(effectiveSpot >= 30000){
+      const prev=S.spot;
+      S.spot=effectiveSpot;S.change=d.change;S.pct=d.pct;
     S.high=d.high;S.low=d.low;S.open=d.open;
     S.vwap=(d.high+d.low+d.spot)/3;
     S.vix=d.vix;S.sp500chg=d.sp500_chg;S.crudechg=d.crude_chg;
@@ -1112,6 +1121,7 @@ async function fetchFromServer(){
     if(last&&last.t===t){last.c=d.spot;last.h=Math.max(last.h,d.high||d.spot);last.l=Math.min(last.l,d.low||d.spot);}
     else{S.candles.push({t,o:prev||d.spot,h:d.high||d.spot,l:d.low||d.spot,c:d.spot,v:1});}
     if(S.candles.length>200)S.candles=S.candles.slice(-200);
+    }
     document.getElementById('upd-ts').textContent=d.last_updated||'—';
     setConn(true,d.market_open!==false,d.last_session_time||'');
     log((d.using_last_session?'Last session \u00b7 ':'Live \u00b7 ')+'BN \u20b9'+d.spot.toLocaleString('en-IN')+' \u00b7 VIX '+d.vix+' \u00b7 '+(d.last_session_time||d.last_updated),d.using_last_session?null:true);
