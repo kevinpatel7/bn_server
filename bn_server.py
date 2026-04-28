@@ -1089,7 +1089,7 @@ function setConn(ok,marketOpen,lastSessionTime){
 
 // Fetch
 async function fetchFromServer(){
-  if(!SERVER){showSetup();return;}
+  // Always use relative paths - terminal is served from the same server
   try{
     const res=await fetchT('/api/price',8000);
     if(!res.ok)throw new Error('HTTP '+res.status);
