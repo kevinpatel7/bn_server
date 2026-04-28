@@ -1129,9 +1129,9 @@ async function fetchFromServer(){
     renderAll();
     updateChartTick(d.spot,d.high,d.low);
   }catch(e){
-    setConn(false,false,'');
-    log('Server error: '+e.message,false);
-    showLoginAlert();
+    // Show closed state, not offline - server is running
+    setConn(true, false, 'Market closed');
+    log('Status: '+e.message, null);
   }
 }
 
@@ -2018,8 +2018,10 @@ function hideLoginAlert(){
   if(alert) alert.style.display = 'none';
 }
 
-// Boot
-fetchFromServer();setInterval(fetchFromServer,5000);
+// Boot - show closed immediately, update when data arrives
+setConn(true, false, 'Loading...');
+fetchFromServer();
+setInterval(fetchFromServer,5000);
 // Auto reload every 4 hours to prevent stale cache
 setTimeout(()=>location.reload(), 4*60*60*1000);
 // Auto reload page every 4 hours to prevent stale cache
