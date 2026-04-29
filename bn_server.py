@@ -844,7 +844,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
     <div><div class="logo-name">BN TERMINAL</div><div class="logo-sub">Upstox · Live</div></div>
   </div>
   <div class="top-right">
-    <div id="conn-pill" onclick="showSetup()"><div class="bd" style="background:var(--muted)"></div><span id="conn-txt">LOADING v2</span></div>
+    <div id="conn-pill" onclick="showSetup()"><div class="bd" style="background:var(--muted)"></div><span id="conn-txt">CLOSED</span></div>
     <div id="clock">—:—:—</div>
   </div>
 </div>
@@ -2262,11 +2262,21 @@ fetchTrades();
           var marketOpen = d.market_open === true;
           
           if(!auth){
-            if(txt) txt.textContent = 'LOGIN';
+            if(txt) txt.textContent = 'LOGIN REQUIRED';
             if(pill) { pill.style.color = 'var(--red)'; pill.style.borderColor = 'var(--red)'; }
+            var dot2 = pill ? pill.querySelector('.bd') : null;
+            if(dot2) dot2.style.background = 'var(--red)';
             return;
           }
           
+          // Show CLOSED when market is not open - even with no spot data
+          if(!marketOpen){
+            if(txt) txt.textContent = 'CLOSED';
+            if(pill) { pill.style.color = 'var(--yellow)'; pill.style.borderColor = 'var(--yellow)'; }
+            var dot3 = pill ? pill.querySelector('.bd') : null;
+            if(dot3) dot3.style.background = 'var(--yellow)';
+          }
+
           if(spot > 30000){
             // Update price display
             var el = document.getElementById('spot-big');
@@ -2285,7 +2295,6 @@ fetchTrades();
           // Update connection pill
           var label = marketOpen ? 'LIVE' : 'CLOSED';
           var col = marketOpen ? 'var(--green)' : 'var(--yellow)';
-          if(d.using_last_session) { label = 'CLOSED'; col = 'var(--yellow)'; }
           if(txt) txt.textContent = label;
           if(pill) { pill.style.color = col; pill.style.borderColor = col; }
           var dot = pill ? pill.querySelector('.bd') : null;
