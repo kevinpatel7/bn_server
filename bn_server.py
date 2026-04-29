@@ -52,41 +52,7 @@ cache = {
 }
 LAST_SESSION_FILE = "last_session.json"
 TRADES_FILE = "paper_trades.json"
-JSONBIN_KEY = os.environ.get("JSONBIN_KEY", "")
-JSONBIN_BIN_ID = os.environ.get("JSONBIN_BIN_ID", "")
 
-def save_to_cloud(data):
-    """Save trades to JSONBin.io for persistence across restarts."""
-    if not JSONBIN_KEY or not JSONBIN_BIN_ID:
-        return False
-    try:
-        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}"
-        r = requests.put(url, json=data,
-            headers={"Content-Type":"application/json","X-Master-Key":JSONBIN_KEY},
-            timeout=10)
-        if r.status_code == 200:
-            print("[CLOUD] Trades saved to cloud")
-            return True
-    except Exception as e:
-        print(f"[CLOUD] Save error: {e}")
-    return False
-
-def load_from_cloud():
-    """Load trades from JSONBin.io on server start."""
-    if not JSONBIN_KEY or not JSONBIN_BIN_ID:
-        return None
-    try:
-        url = f"https://api.jsonbin.io/v3/b/{JSONBIN_BIN_ID}/latest"
-        r = requests.get(url,
-            headers={"X-Master-Key":JSONBIN_KEY},
-            timeout=10)
-        if r.status_code == 200:
-            data = r.json().get("record", {})
-            print(f"[CLOUD] Trades loaded from cloud: {data.get('stats',{}).get('total',0)} trades")
-            return data
-    except Exception as e:
-        print(f"[CLOUD] Load error: {e}")
-    return None
 
 # ═══════════════════ PHASE 2 — END OF DAY LEARNING ═══════════════════
 LEARNING_FILE = "learning_log.json"
@@ -322,17 +288,6 @@ RULES = {
 }
 
 def load_trades():
-    # Try cloud first (survives Railway restarts)
-    cloud_data = load_from_cloud()
-    if cloud_data:
-        paper["trades"] = cloud_data.get("trades", [])
-        paper["stats"] = cloud_data.get("stats", {"total":0,"wins":0,"losses":0,"pnl":0})
-        paper["available"] = cloud_data.get("available", 100000)
-        paper["open_trade"] = cloud_data.get("open_trade", None)
-        paper["capital"] = cloud_data.get("capital", 100000)
-        print(f"[TRADES] Loaded {len(paper['trades'])} trades from cloud")
-        return
-    # Fallback to local file
     try:
         with open(TRADES_FILE) as f:
             data = json.load(f)
@@ -340,20 +295,16 @@ def load_trades():
             paper["stats"] = data.get("stats", {"total":0,"wins":0,"losses":0,"pnl":0})
             paper["available"] = data.get("available", 100000)
             paper["open_trade"] = data.get("open_trade", None)
-            print(f"[TRADES] Loaded {len(paper['trades'])} trades from local")
+            print(f"[TRADES] Loaded {len(paper['trades'])} trades")
     except: pass
 
 def save_trades():
-    data = {"trades": paper["trades"], "stats": paper["stats"],
-            "available": paper["available"], "open_trade": paper["open_trade"],
-            "capital": paper["capital"]}
     try:
         with open(TRADES_FILE, "w") as f:
-            json.dump(data, f)
+            json.dump({"trades": paper["trades"], "stats": paper["stats"],
+                       "available": paper["available"], "open_trade": paper["open_trade"]}, f)
     except Exception as e:
         print(f"[TRADES] Save error: {e}")
-    # Also save to cloud for persistence
-    threading.Thread(target=save_to_cloud, args=(data,), daemon=True).start()
 
 def estimate_premium(spot, strike, otype, vix):
     """
@@ -1099,11 +1050,8 @@ async function fetchFromServer(){
       showLoginAlert();
       return;
     }
-    // Handle market closed state
     if(!d.spot||d.spot<30000){
-      setConn(true, d.market_open===true, d.last_session_time||'');
-      log('Market closed', null);
-      renderAll();
+      setConn(true, false, d.last_session_time||'');
       return;
     }
     const prev=S.spot;
@@ -1125,9 +1073,8 @@ async function fetchFromServer(){
     renderAll();
     updateChartTick(d.spot,d.high,d.low);
   }catch(e){
-    // Show closed state, not offline - server is running
-    setConn(true, false, 'Market closed');
-    log('Status: '+e.message, null);
+    setConn(false,false,'');
+    log('Server error: '+e.message,false);
   }
 }
 
@@ -1991,8 +1938,8 @@ function hideLoginAlert(){
   if(alert) alert.style.display = 'none';
 }
 
-// Boot - show closed immediately, update when data arrives
-setConn(true, false, 'Loading...');
+// Boot
+setConn(true, false, '');
 fetchFromServer();
 setInterval(fetchFromServer,5000);
 // Auto reload every 4 hours to prevent stale cache
@@ -2242,77 +2189,6 @@ setInterval(fetchTrades, 5000);
 fetchTrades();
 
 
-// OVERRIDE: Force connection regardless of JS errors above
-(function(){
-  try {
-    // Force show CLOSED immediately
-    var pill = document.getElementById('conn-pill');
-    var txt = document.getElementById('conn-txt');
-    if(txt) { txt.textContent = 'CLOSED'; }
-    if(pill) { pill.style.color = 'var(--yellow)'; pill.style.borderColor = 'var(--yellow)'; }
-    
-    // Simple price fetcher that always works
-    function simpleFetch(){
-      fetch('/api/price', {cache:'no-store'})
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          if(!d) return;
-          var spot = d.spot || 0;
-          var auth = d.authenticated;
-          var marketOpen = d.market_open === true;
-          
-          if(!auth){
-            if(txt) txt.textContent = 'LOGIN REQUIRED';
-            if(pill) { pill.style.color = 'var(--red)'; pill.style.borderColor = 'var(--red)'; }
-            var dot2 = pill ? pill.querySelector('.bd') : null;
-            if(dot2) dot2.style.background = 'var(--red)';
-            return;
-          }
-          
-          // Show CLOSED when market is not open - even with no spot data
-          if(!marketOpen){
-            if(txt) txt.textContent = 'CLOSED';
-            if(pill) { pill.style.color = 'var(--yellow)'; pill.style.borderColor = 'var(--yellow)'; }
-            var dot3 = pill ? pill.querySelector('.bd') : null;
-            if(dot3) dot3.style.background = 'var(--yellow)';
-          }
-
-          if(spot > 30000){
-            // Update price display
-            var el = document.getElementById('spot-big');
-            if(el) { el.textContent = '\u20b9' + Math.round(spot).toLocaleString('en-IN'); }
-            var cl = document.getElementById('clock');
-            if(cl) {
-              var now = new Date(Date.now() + 5.5*3600000);
-              cl.textContent = String(now.getUTCHours()).padStart(2,'0')+':'+String(now.getUTCMinutes()).padStart(2,'0')+':'+String(now.getUTCSeconds()).padStart(2,'0')+' IST';
-            }
-            // OHLV
-            if(d.open) { var oel=document.getElementById('d-o'); if(oel) oel.textContent=Math.round(d.open).toLocaleString('en-IN'); }
-            if(d.high) { var hel=document.getElementById('d-h'); if(hel) hel.textContent=Math.round(d.high).toLocaleString('en-IN'); }
-            if(d.low)  { var lel=document.getElementById('d-l'); if(lel) lel.textContent=Math.round(d.low).toLocaleString('en-IN'); }
-          }
-          
-          // Update connection pill
-          var label = marketOpen ? 'LIVE' : 'CLOSED';
-          var col = marketOpen ? 'var(--green)' : 'var(--yellow)';
-          if(txt) txt.textContent = label;
-          if(pill) { pill.style.color = col; pill.style.borderColor = col; }
-          var dot = pill ? pill.querySelector('.bd') : null;
-          if(dot) dot.style.background = col;
-        })
-        .catch(function(e){
-          if(txt) txt.textContent = 'OFFLINE';
-          if(pill) { pill.style.color = 'var(--red)'; pill.style.borderColor = 'var(--red)'; }
-        });
-    }
-    
-    simpleFetch();
-    setInterval(simpleFetch, 5000);
-    
-  } catch(e) {
-    console.error('Override error:', e);
-  }
-})();
 
 </script>
 </body>
