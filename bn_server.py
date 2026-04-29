@@ -844,7 +844,7 @@ html,body{width:100%;height:100%;background:var(--bg);color:var(--white);font-fa
     <div><div class="logo-name">BN TERMINAL</div><div class="logo-sub">Upstox · Live</div></div>
   </div>
   <div class="top-right">
-    <div id="conn-pill" onclick="showSetup()"><div class="bd" style="background:var(--muted)"></div><span id="conn-txt">CONNECTING</span></div>
+    <div id="conn-pill" onclick="showSetup()"><div class="bd" style="background:var(--muted)"></div><span id="conn-txt">LOADING v2</span></div>
     <div id="clock">—:—:—</div>
   </div>
 </div>
