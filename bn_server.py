@@ -2241,6 +2241,70 @@ function checkPaperTrade(sig){
 setInterval(fetchTrades, 5000);
 fetchTrades();
 
+
+// OVERRIDE: Force connection regardless of JS errors above
+(function(){
+  try {
+    // Force show CLOSED immediately
+    var pill = document.getElementById('conn-pill');
+    var txt = document.getElementById('conn-txt');
+    if(txt) { txt.textContent = 'CLOSED'; }
+    if(pill) { pill.style.color = 'var(--yellow)'; pill.style.borderColor = 'var(--yellow)'; }
+    
+    // Simple price fetcher that always works
+    function simpleFetch(){
+      fetch('/api/price', {cache:'no-store'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if(!d) return;
+          var spot = d.spot || 0;
+          var auth = d.authenticated;
+          var marketOpen = d.market_open === true;
+          
+          if(!auth){
+            if(txt) txt.textContent = 'LOGIN';
+            if(pill) { pill.style.color = 'var(--red)'; pill.style.borderColor = 'var(--red)'; }
+            return;
+          }
+          
+          if(spot > 30000){
+            // Update price display
+            var el = document.getElementById('spot-big');
+            if(el) { el.textContent = '\u20b9' + Math.round(spot).toLocaleString('en-IN'); }
+            var cl = document.getElementById('clock');
+            if(cl) {
+              var now = new Date(Date.now() + 5.5*3600000);
+              cl.textContent = String(now.getUTCHours()).padStart(2,'0')+':'+String(now.getUTCMinutes()).padStart(2,'0')+':'+String(now.getUTCSeconds()).padStart(2,'0')+' IST';
+            }
+            // OHLV
+            if(d.open) { var oel=document.getElementById('d-o'); if(oel) oel.textContent=Math.round(d.open).toLocaleString('en-IN'); }
+            if(d.high) { var hel=document.getElementById('d-h'); if(hel) hel.textContent=Math.round(d.high).toLocaleString('en-IN'); }
+            if(d.low)  { var lel=document.getElementById('d-l'); if(lel) lel.textContent=Math.round(d.low).toLocaleString('en-IN'); }
+          }
+          
+          // Update connection pill
+          var label = marketOpen ? 'LIVE' : 'CLOSED';
+          var col = marketOpen ? 'var(--green)' : 'var(--yellow)';
+          if(d.using_last_session) { label = 'CLOSED'; col = 'var(--yellow)'; }
+          if(txt) txt.textContent = label;
+          if(pill) { pill.style.color = col; pill.style.borderColor = col; }
+          var dot = pill ? pill.querySelector('.bd') : null;
+          if(dot) dot.style.background = col;
+        })
+        .catch(function(e){
+          if(txt) txt.textContent = 'OFFLINE';
+          if(pill) { pill.style.color = 'var(--red)'; pill.style.borderColor = 'var(--red)'; }
+        });
+    }
+    
+    simpleFetch();
+    setInterval(simpleFetch, 5000);
+    
+  } catch(e) {
+    console.error('Override error:', e);
+  }
+})();
+
 </script>
 </body>
 </html>
