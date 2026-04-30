@@ -990,10 +990,11 @@ async function fetchFromServer() {
     if (S.candles.length > 300) S.candles = S.candles.slice(-300);
 
     document.getElementById('upd-ts').textContent = d.last_updated || '—';
-    setConn(true, d.market_open !== false, d.last_session_time || '');
+    setConn(true, d.market_open === true, d.last_session_time || '');
 
     const using_last = d.using_last_session;
-    log((using_last ? 'Last session · ' : 'Live · ') + 'BN ₹' + f(spot) + ' · VIX ' + (S.vix||'—'), using_last ? null : true);
+    const isLive = d.market_open === true && !using_last;
+    log((isLive ? 'Live' : 'Last session') + ' · BN ₹' + f(spot) + ' · VIX ' + (S.vix||'—'), isLive ? true : null);
 
     updatePriceDisplay();
     renderAll();
