@@ -282,7 +282,7 @@ RULES = {
     "max_daily_loss_pct": 2.0,     # stop if 2% of capital lost in a day
     "no_trade_before": (9, 20),    # 9:20 AM IST
     "no_trade_after": (15, 0),     # 3:00 PM IST
-    "min_gap_minutes": 5,   # 5 min gap on trending days         # 10 min gap between trades
+    "min_gap_minutes": 3,   # 5 min gap on trending days         # 10 min gap between trades
     "min_confidence": 55,
     "max_daily_loss": 2000,        # ₹2000 max daily loss (2% of 1L)
 }
@@ -1197,6 +1197,15 @@ function computeSignal(cs, spot) {
     return{...base,signal:'SELL',conf:Math.min(78,beh.strength+10),gate:null,otype:'PE',
       sl:spot+120,t1:piv.S1,t2:piv.S2,t3:piv.S3,meta,behaviour:'TREND_CONTINUATION',regime_note:beh.reason};
   }
+  // Reversal after RSI extreme — catch the turn
+  if(beh.rs>70&&e9<e21&&spot<vw){
+    return{...base,signal:'SELL',conf:72,gate:null,otype:'PE',
+      sl:spot+100,t1:piv.S1,t2:piv.S2,t3:piv.S3,meta,behaviour:'RSI_REVERSAL_DOWN',regime_note:'RSI overbought reversal'};
+  }
+  if(beh.rs<30&&e9>e21&&spot>vw){
+    return{...base,signal:'BUY',conf:72,gate:null,otype:'CE',
+      sl:spot-100,t1:piv.R1,t2:piv.R2,t3:piv.R3,meta,behaviour:'RSI_REVERSAL_UP',regime_note:'RSI oversold reversal'};
+  }
 
   // Standard 8-factor
   const bull={'Price>VWAP':spot>vw,'EMA9>EMA21':e9>e21,'Supertrend Bull':st.bull,'RSI 45-65':rs>=45&&rs<=65,'Momentum Up':beh.ptMove>30,'PCR>0.9':S.pcr>0.9,'RSI>50':rs>50,'S&P+':S.sp500chg>0};
@@ -1237,6 +1246,10 @@ function renderAll() {
       fetch('/api/trades/close_reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:result.reason,spot:S.spot})}).then(()=>fetchTrades());
       TradeBrain.reset();
       toast('Trade exited: '+result.reason);
+      // If RSI extreme exit - immediately look for reversal trade
+      if(result.reason.includes('RSI OVERBOUGHT')||result.reason.includes('REVERSAL')){
+        lastSignalFired = null; // reset so reversal can fire immediately
+      }
     }
   }
   if (prevSig && prevSig!=='WAIT' && sig.signal!==prevSig && sig.signal!=='WAIT') {
@@ -1558,7 +1571,7 @@ async function resetAccount() {
 
 function checkPaperTrade(sig) {
   if (!sig || sig.signal==='WAIT') return;
-  const now5min = Math.floor(Date.now()/300000);
+  const now5min = Math.floor(Date.now()/180000); // 3 min window
   const key = sig.signal+'_'+sig.strike+'_'+now5min;
   if (key===lastSignalFired) return;
   const conf = sig.conf || 65;
