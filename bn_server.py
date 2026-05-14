@@ -306,28 +306,48 @@ def save_trades():
     except Exception as e:
         print(f"[TRADES] Save error: {e}")
 
+def get_real_premium(strike, otype):
+    """Get real market premium from Upstox option chain."""
+    oc = cache.get("option_chain", [])
+    if not oc:
+        return None
+    ltp_key = "ce_ltp" if otype == "CE" else "pe_ltp"
+    # Find exact strike in chain
+    for item in oc:
+        if item.get("strike") == strike:
+            ltp = item.get(ltp_key, 0)
+            if ltp and ltp > 0:
+                print(f"[PREMIUM] Real LTP for {strike}{otype}: ₹{ltp}")
+                return ltp
+    # If exact strike not found, find nearest
+    nearest = min(oc, key=lambda x: abs(x.get("strike",0)-strike), default=None)
+    if nearest:
+        ltp = nearest.get(ltp_key, 0)
+        if ltp and ltp > 0:
+            print(f"[PREMIUM] Nearest LTP for {strike}{otype} (used {nearest['strike']}): ₹{ltp}")
+            return ltp
+    return None
+
 def estimate_premium(spot, strike, otype, vix):
     """
-    Realistic BN option premium estimator.
-    Based on actual market observation:
-    - ATM options trade at roughly VIX/100 * spot * sqrt(DTE/365)
-    - Weekly expiry ~5 days out
-    - OTM drops exponentially
+    Get premium - uses real Upstox LTP if available, falls back to BSM estimate.
     """
+    # Try real premium first
+    real = get_real_premium(strike, otype)
+    if real and real > 0:
+        return real
+    # Fallback to BSM estimate
     import math
     vix_val = max(vix or 15, 12)
     vol = vix_val / 100
-    DTE = 5 / 365  # weekly expiry ~5 days
+    DTE = 5 / 365
     diff = abs(spot - strike)
     intrinsic = max(0, spot - strike) if otype == "CE" else max(0, strike - spot)
-    # Time value using simplified BSM
     d = diff / (spot * vol * math.sqrt(DTE) + 1)
     time_val = spot * vol * math.sqrt(DTE) * math.exp(-0.5 * d * d) * 0.4
     premium = intrinsic + time_val
-    # Realistic bounds for BN options
-    # ATM should be ~100-400 depending on VIX
-    # OTM 200pts away should be ~20-80
     premium = max(5.0, min(premium, 800.0))
+    print(f"[PREMIUM] BSM estimate for {strike}{otype}: ₹{round(premium,2)}")
     return round(premium, 2)
 
 def check_exit(spot):
@@ -458,18 +478,24 @@ def open_trade(signal, spot, vix):
         "pnl": 0,
         "reason": None
     }
+    # Store whether we used real or estimated premium
+    trade["using_real_premium"] = get_real_premium(strike, otype) is not None
     paper["open_trade"] = trade
     paper["available"] -= cost
     paper["daily"]["trades"] += 1
     paper["daily"]["last_trade_time"] = time.time()
-    print(f"[PAPER] Opened: {trade['signal']} {strike} @ ₹{premium} x {lots} lots | Trade {paper['daily']['trades']}/{RULES['max_trades_per_day']} today")
+    print(f"[PAPER] Opened: {trade['signal']} {strike} @ ₹{premium} ({'REAL' if trade['using_real_premium'] else 'BSM'}) x {lots} lots")
     save_trades()
 
 def close_trade(exit_spot, reason):
-    """Close the open paper trade."""
+    """Close the open paper trade using real premium if available."""
     t = paper["open_trade"]
     if not t: return
-    exit_premium = estimate_premium(exit_spot, t["strike"], t["otype"], cache.get("vix", 15))
+    # Try real premium first, fall back to estimate
+    exit_premium = get_real_premium(t["strike"], t["otype"])
+    if not exit_premium or exit_premium <= 0:
+        exit_premium = estimate_premium(exit_spot, t["strike"], t["otype"], cache.get("vix", 15))
+    print(f"[PAPER] Exit premium for {t['strike']}{t['otype']}: ₹{exit_premium}")
     pnl = round((exit_premium - t["entry_premium"]) * t["qty"], 2)
     t.update({"status": "CLOSED", "exit_spot": exit_spot,
                "exit_premium": exit_premium, "pnl": pnl, "reason": reason,
@@ -2157,7 +2183,10 @@ def trades_api():
     open_t = paper["open_trade"]
     live_pnl = 0
     if open_t and spot:
-        curr_prem = estimate_premium(spot, open_t["strike"], open_t["otype"], cache.get("vix",15))
+        # Use real premium for live P&L
+        curr_prem = get_real_premium(open_t["strike"], open_t["otype"])
+        if not curr_prem or curr_prem <= 0:
+            curr_prem = estimate_premium(spot, open_t["strike"], open_t["otype"], cache.get("vix",15))
         live_pnl = round((curr_prem - open_t["entry_premium"]) * open_t["qty"], 2)
     return jsonify({
         "capital": paper["capital"],
@@ -2167,7 +2196,8 @@ def trades_api():
         "trades": paper["trades"][:50],
         "stats": paper["stats"],
         "daily": paper["daily"],
-        "rules": RULES
+        "rules": RULES,
+        "premium_source": "REAL" if (open_t and open_t.get("using_real_premium")) else "BSM"
     })
 
 @app.route("/api/trades/signal", methods=["POST"])
