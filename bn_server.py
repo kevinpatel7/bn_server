@@ -435,10 +435,11 @@ def open_trade(signal, spot, vix):
 
     # VIX-adjusted stop loss width (wider SL on high VIX days)
     # High VIX = market is noisy = need wider SL to survive intraday swings
-    sl_width = 120  # default 120 points SL
-    if vix > 25: sl_width = 200   # very volatile - 200pt SL
-    elif vix > 20: sl_width = 160  # elevated - 160pt SL
-    elif vix < 14: sl_width = 80   # calm - tighter 80pt SL
+    sl_width = 150  # default 150 points SL
+    if vix > 25: sl_width = 220   # very volatile - 220pt SL
+    elif vix > 20: sl_width = 180  # elevated - 180pt SL
+    elif vix > 16: sl_width = 150  # normal - 150pt SL
+    elif vix < 14: sl_width = 100  # calm - tighter 100pt SL
 
     # Override SL from signal with VIX-adjusted SL
     if otype == "CE":
@@ -1486,8 +1487,8 @@ const TradeBrain = {
       if (this.direction==='SHORT' && last3.every(c=>c.c>c.o) && pts<-30) return this._exit('3 REVERSAL CANDLES', spot);
     }
     // RSI extreme
-    if (this.direction==='LONG' && rs>75 && pts>50) return this._exit('RSI OVERBOUGHT - TAKING PROFIT', spot);
-    if (this.direction==='SHORT' && rs<25 && pts>50) return this._exit('RSI OVERSOLD - TAKING PROFIT', spot);
+    if (this.direction==='LONG' && rs>75 && pts>50 && this.candles_in_trade>=5) return this._exit('RSI OVERBOUGHT - TAKING PROFIT', spot);
+    if (this.direction==='SHORT' && rs<25 && pts>50 && this.candles_in_trade>=5) return this._exit('RSI OVERSOLD - TAKING PROFIT', spot);
     return {action:'HOLD', pts, trail_sl:this.trail_sl};
   },
   _exit(reason, spot) {
@@ -2106,6 +2107,17 @@ def fetch_loop():
                 if was_open:
                     print("[SESSION] Market closed. Saving final session.")
                     save_last_session()
+                    # Phase 2: End of day learning
+                    try:
+                        from datetime import timezone, timedelta
+                        ist = timezone(timedelta(hours=5, minutes=30))
+                        ct = datetime.now(timezone.utc).astimezone(ist)
+                        if ct.hour >= 15:
+                            review = end_of_day_review()
+                            if review:
+                                print(f"[LEARN] Day complete: {review['win_rate']}% WR")
+                    except Exception as e:
+                        print(f"[LEARN] Error: {e}")
                     was_open = False
                 if not historical_loaded:
                     print("[SESSION] Market closed — loading historical data.")
