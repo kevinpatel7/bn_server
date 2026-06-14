@@ -1858,16 +1858,16 @@ function renderLearning(d) {
   bodyEl.innerHTML=html;
 }
 
-async function manualClose() {
-  if (!confirm('Close open trade now?')) return;
-  await fetch('/api/trades/close',{method:'POST'});
-  fetchTrades();
+function manualClose() {
+  showModal('Close open trade now?', function() {
+    fetch('/api/trades/close',{method:'POST'}).then(function(){fetchTrades();});
+  });
 }
 
-async function resetAccount() {
-  if (!confirm('Reset all trades and start fresh with ₹1,00,000?')) return;
-  await fetch('/api/trades/reset',{method:'POST'});
-  fetchTrades();
+function resetAccount() {
+  showModal('Reset all trades and start fresh with Rs.1,00,000?', function() {
+    fetch('/api/trades/reset',{method:'POST'}).then(function(){fetchTrades();});
+  });
 }
 
 function checkPaperTrade(sig) {
@@ -1983,20 +1983,23 @@ function renderLiveStatus(d) {
 }
 
 function enableLive() {
-  if (!confirm('REAL MONEY WARNING\nPlaces REAL orders on Upstox.\n1 lot | Max Rs.10000 | Stop Rs.2000\nConfirm?')) return;
-  fetch('/api/live/enable', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lots:1,max_capital:10000,max_daily_loss:2000})})
-    .then(function(r){return r.json();})
-    .then(function(d){ if(d.ok){toast('Live trading ENABLED');fetchLiveStatus();}else{toast('Error: '+d.error);} });
+  showModal('REAL MONEY WARNING - Places REAL orders on Upstox.\n1 lot | Max Rs.10000 | Stop Rs.2000\nConfirm to enable?', function() {
+    fetch('/api/live/enable', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lots:1,max_capital:10000,max_daily_loss:2000})})
+      .then(function(r){return r.json();})
+      .then(function(d){ if(d.ok){toast('Live trading ENABLED');fetchLiveStatus();}else{toast('Error: '+d.error);} });
+  });
 }
 
 function disableLive() {
-  if (!confirm('Disable live trading?')) return;
-  fetch('/api/live/disable',{method:'POST'}).then(function(){toast('Live trading disabled');fetchLiveStatus();});
+  showModal('Disable live trading?', function() {
+    fetch('/api/live/disable',{method:'POST'}).then(function(){toast('Live trading disabled');fetchLiveStatus();});
+  });
 }
 
 function exitLive() {
-  if (!confirm('Exit live trade at market price?')) return;
-  fetch('/api/live/exit',{method:'POST'}).then(function(r){return r.json();}).then(function(d){toast(d.ok?'Exit placed':'Exit error: '+d.error);fetchLiveStatus();});
+  showModal('Exit live trade at market price?', function() {
+    fetch('/api/live/exit',{method:'POST'}).then(function(r){return r.json();}).then(function(d){toast(d.ok?'Exit placed':'Exit error: '+d.error);fetchLiveStatus();});
+  });
 }
 
 function checkLiveTrade(sig) {
@@ -2015,7 +2018,25 @@ function checkLiveTrade(sig) {
 
 setInterval(function(){ try{fetchLiveStatus();}catch(e){} }, 10000);
 
+// ── MODAL: replaces confirm() which is blocked in Railway sandbox ──
+function showModal(msg, onOk) {
+  var el = document.getElementById('bn-modal');
+  document.getElementById('bn-modal-msg').textContent = msg;
+  el.style.display = 'flex';
+  document.getElementById('bn-modal-ok').onclick = function() { el.style.display='none'; onOk(); };
+  document.getElementById('bn-modal-cancel').onclick = function() { el.style.display='none'; };
+}
+
 </script>
+<div id="bn-modal" style="display:none;position:fixed;inset:0;background:rgba(6,10,16,0.94);z-index:2000;align-items:center;justify-content:center">
+  <div style="background:#0D1117;border:1px solid #1E2D45;border-radius:6px;padding:28px 24px;max-width:300px;width:90%;text-align:center">
+    <div id="bn-modal-msg" style="font-size:12px;color:#E8F0FF;line-height:1.9;margin-bottom:22px;white-space:pre-line"></div>
+    <div style="display:flex;gap:10px">
+      <button id="bn-modal-cancel" style="flex:1;padding:11px;background:#1A2233;color:#E8F0FF;border:1px solid #1E2D45;font-family:var(--cond);font-size:13px;font-weight:700;cursor:pointer;border-radius:4px">CANCEL</button>
+      <button id="bn-modal-ok" style="flex:1;padding:11px;background:#FF6D00;color:#000;border:none;font-family:var(--cond);font-size:13px;font-weight:700;cursor:pointer;border-radius:4px">CONFIRM</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
 
