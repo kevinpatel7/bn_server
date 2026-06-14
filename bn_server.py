@@ -1937,139 +1937,83 @@ setInterval(fetchTrades, 10000);
 setTimeout(()=>location.reload(), 4*60*60*1000);
 fetchTrades();
 
-// ═══════════════ LIVE TRADING JS ═══════════════
-let liveEnabled = false;
-let lastLiveSignal = null;
 
-async function fetchLiveStatus() {
-  try {
-    const res = await fetch('/api/live/status', {cache:'no-store'});
-    if (!res.ok) return;
-    const d = await res.json();
-    if (d) renderLiveStatus(d);
-  } catch(e) { /* silent */ }
+// LIVE TRADING
+var liveEnabled = false;
+var lastLiveSignal = null;
+
+function fetchLiveStatus() {
+  fetch('/api/live/status', {cache:'no-store'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){ if(d) renderLiveStatus(d); })
+    .catch(function(){});
 }
 
 function renderLiveStatus(d) {
   if (!d) return;
-  liveEnabled = d.enabled;
-
-  // Status badge
-  const badge = document.getElementById('live-status-badge');
-  const enableBtn = document.getElementById('live-enable-btn');
-  const disableBtn = document.getElementById('live-disable-btn');
-  const card = document.getElementById('live-status-card');
-
-  if (badge) {
-    badge.textContent = d.enabled ? ' ACTIVE' : ' DISABLED';
-    badge.style.color = d.enabled ? 'var(--green)' : 'var(--red)';
-  }
-  if (card) card.style.borderColor = d.enabled ? 'var(--green)' : 'var(--bdr)';
+  liveEnabled = d.enabled || false;
+  var badge = document.getElementById('live-status-badge');
+  var enableBtn = document.getElementById('live-enable-btn');
+  var disableBtn = document.getElementById('live-disable-btn');
+  if (badge) { badge.textContent = d.enabled ? ' ACTIVE' : ' DISABLED'; badge.style.color = d.enabled ? 'var(--green)' : 'var(--red)'; }
   if (enableBtn) enableBtn.style.display = d.enabled ? 'none' : 'block';
   if (disableBtn) disableBtn.style.display = d.enabled ? 'block' : 'none';
-
-  // Daily stats
-  const pnlEl = document.getElementById('live-daily-pnl');
-  const tradesEl = document.getElementById('live-daily-trades');
-  if (pnlEl) { pnlEl.textContent = (d.daily_pnl>=0?'+':'') + '₹' + Math.round(Math.abs(d.daily_pnl)).toLocaleString('en-IN'); pnlEl.style.color = fc(d.daily_pnl); }
-  if (tradesEl) tradesEl.textContent = d.daily_trades || 0;
-
-  // Open position
-  const openBody = document.getElementById('live-open-body');
-  if (openBody) {
+  var pnlEl = document.getElementById('live-daily-pnl');
+  var trEl = document.getElementById('live-daily-trades');
+  if (pnlEl) { var p=d.daily_pnl||0; pnlEl.textContent=(p>=0?'+':'-')+'Rs.'+Math.round(Math.abs(p)).toLocaleString('en-IN'); pnlEl.style.color=p>=0?'var(--green)':'var(--red)'; }
+  if (trEl) trEl.textContent = d.daily_trades || 0;
+  var ob = document.getElementById('live-open-body');
+  if (ob) {
     if (d.open_trade) {
-      const t = d.open_trade;
-      const isBuy = t.otype === 'CE';
-      const col = isBuy ? 'var(--green)' : 'var(--red)';
-      openBody.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--bdr)">'
-        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">SIGNAL</div><div style="font-family:var(--cond);font-size:20px;font-weight:900;color:'+col+'">'+(isBuy?'BUY CALL':'BUY PUT')+'</div></div>'
-        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">STRIKE</div><div style="font-family:var(--cond);font-size:20px;font-weight:900">'+t.strike.toLocaleString('en-IN')+' '+t.otype+'</div></div>'
-        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">ORDER ID</div><div style="font-size:10px;color:var(--teal);font-weight:700">'+(t.order_id||'—')+'</div></div>'
-        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">QTY</div><div style="font-family:var(--cond);font-size:18px;font-weight:900">'+t.qty+'</div></div>'
-        + '</div>';
+      var t = d.open_trade;
+      ob.innerHTML = '<div style="padding:12px;font-family:var(--cond);font-size:16px;font-weight:900;color:'+(t.otype==='CE'?'var(--green)':'var(--red)')+'">'+t.strike+' '+t.otype+' | Qty:'+t.qty+'</div>';
     } else {
-      openBody.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position</div>';
+      ob.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position</div>';
     }
   }
-
-  // Trade history
-  const hist = document.getElementById('live-history');
-  if (hist) {
-    if (!d.orders || !d.orders.length) {
-      hist.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No live trades yet</div>';
-    } else {
-      hist.innerHTML = d.orders.map(function(t) {
-        const col = (t.pnl||0) >= 0 ? 'var(--green)' : 'var(--red)';
-        const isBuy = t.otype === 'CE';
-        return '<div style="padding:8px 12px;border-bottom:1px solid var(--bdr)">'
-          + '<div style="display:flex;justify-content:space-between">'
-          + '<span style="font-family:var(--cond);font-weight:900;color:'+(isBuy?'var(--green)':'var(--red)')+'">'+t.strike+' '+t.otype+'</span>'
-          + '<span style="font-family:var(--cond);font-weight:900;color:'+col+'">'+(t.pnl>=0?'+':'')+'₹'+Math.round(Math.abs(t.pnl||0)).toLocaleString('en-IN')+'</span>'
-          + '</div>'
-          + '<div style="font-size:8px;color:var(--muted)">'+(t.time||'')+'→'+(t.exit_time||'—')+' · '+(t.reason||'')+'</div>'
-          + '</div>';
-      }).join('');
-    }
+  var hist = document.getElementById('live-history');
+  if (hist && d.orders && d.orders.length) {
+    hist.innerHTML = d.orders.slice(0,10).map(function(t){
+      var p=t.pnl||0; var col=p>=0?'var(--green)':'var(--red)';
+      return '<div style="padding:8px 12px;border-bottom:1px solid var(--bdr)"><span style="font-family:var(--cond);font-weight:900">'+t.strike+' '+t.otype+'</span> <span style="color:'+col+';float:right">'+(p>=0?'+':'')+Math.round(p)+'</span><br><span style="font-size:8px;color:var(--muted)">'+(t.reason||'')+'</span></div>';
+    }).join('');
   }
-
-  // Log
-  const logEl = document.getElementById('live-log');
-  if (logEl && d.log && d.log.length) {
-    logEl.innerHTML = d.log.map(l => '<div>'+l+'</div>').join('');
-  }
+  var logEl = document.getElementById('live-log');
+  if (logEl && d.log && d.log.length) { logEl.innerHTML = d.log.map(function(l){return '<div>'+l+'</div>';}).join(''); }
 }
 
-async function enableLive() {
-  if (!confirm('REAL MONEY WARNING\nThis places REAL orders on Upstox.\n1 lot only | Max Rs.10,000 | Stop at Rs.2,000 loss\nAre you sure?')) return;
-  const res = await fetch('/api/live/enable', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({lots: 1, max_capital: 10000, max_daily_loss: 2000})
-  });
-  const d = await res.json();
-  if (d.ok) { toast('Live trading ENABLED - 1 lot, Rs.10K limit'); fetchLiveStatus(); }
-  else toast('Error: ' + d.error);
+function enableLive() {
+  if (!confirm('REAL MONEY WARNING\nPlaces REAL orders on Upstox.\n1 lot | Max Rs.10000 | Stop Rs.2000\nConfirm?')) return;
+  fetch('/api/live/enable', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lots:1,max_capital:10000,max_daily_loss:2000})})
+    .then(function(r){return r.json();})
+    .then(function(d){ if(d.ok){toast('Live trading ENABLED');fetchLiveStatus();}else{toast('Error: '+d.error);} });
 }
 
-async function disableLive() {
+function disableLive() {
   if (!confirm('Disable live trading?')) return;
-  await fetch('/api/live/disable', {method: 'POST'});
-  toast('Live trading disabled');
-  fetchLiveStatus();
+  fetch('/api/live/disable',{method:'POST'}).then(function(){toast('Live trading disabled');fetchLiveStatus();});
 }
 
-async function exitLive() {
-  if (!confirm('Exit live trade NOW at market price?')) return;
-  const res = await fetch('/api/live/exit', {method: 'POST'});
-  const d = await res.json();
-  if (d.ok) toast('Exit order placed | P&L: ' + (d.pnl>=0?'+':'') + '₹' + Math.round(Math.abs(d.pnl||0)));
-  else toast('Exit error: ' + d.error);
-  fetchLiveStatus();
+function exitLive() {
+  if (!confirm('Exit live trade at market price?')) return;
+  fetch('/api/live/exit',{method:'POST'}).then(function(r){return r.json();}).then(function(d){toast(d.ok?'Exit placed':'Exit error: '+d.error);fetchLiveStatus();});
 }
 
-// Connect live trading to signal engine
 function checkLiveTrade(sig) {
-  if (!liveEnabled) return;
-  if (!sig || sig.signal === 'WAIT') return;
-  const now3min = Math.floor(Date.now() / 180000);
-  const key = 'LIVE_' + sig.signal + '_' + sig.strike + '_' + now3min;
-  if (key === lastLiveSignal) return;
-  const conf = sig.conf || 65;
-  if (conf >= 60) {
+  if (!liveEnabled || !sig || sig.signal==='WAIT') return;
+  var now3 = Math.floor(Date.now()/180000);
+  var key = 'LIVE_'+sig.signal+'_'+sig.strike+'_'+now3;
+  if (key===lastLiveSignal) return;
+  var conf = sig.conf||65;
+  if (conf>=60) {
     lastLiveSignal = key;
-    fetch('/api/live/signal', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({signal: sig.signal==='BUY'?'BUY':'SELL', otype: sig.otype, strike: sig.strike, sl: sig.sl, t1: sig.t1, t2: sig.t2, conf})
-    }).then(function(r) { return r.json(); }).then(function(d) {
-      if (d.ok) toast('LIVE ORDER PLACED: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike.toLocaleString('en-IN'));
-      else toast('Live order failed: ' + d.error);
-      fetchLiveStatus();
-    });
+    fetch('/api/live/signal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({signal:sig.signal==='BUY'?'BUY':'SELL',otype:sig.otype,strike:sig.strike,sl:sig.sl,t1:sig.t1,t2:sig.t2,conf:conf})})
+      .then(function(r){return r.json();})
+      .then(function(d){toast(d.ok?'LIVE ORDER: '+(sig.signal==='BUY'?'BUY CALL':'BUY PUT')+' '+sig.strike:'Live failed: '+d.error);fetchLiveStatus();});
   }
 }
 
-// Poll live status every 10 seconds
-setInterval(function(){ try{ fetchLiveStatus(); }catch(e){} }, 10000);
-
+setInterval(function(){ try{fetchLiveStatus();}catch(e){} }, 10000);
 
 </script>
 </body>
