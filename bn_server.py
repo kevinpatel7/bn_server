@@ -954,7 +954,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div class="tab"     onclick="goTab(2)">⛓ LEVELS</div>
   <div class="tab"     onclick="goTab(3)">🤖 ARIA</div>
   <div class="tab"     onclick="goTab(4)">📋 TRADES</div>
-  <div class="tab"     onclick="goTab(5)">🔴 LIVE</div>
+  <div class="tab"     onclick="goTab(5)">LIVE</div>
 </div>
 
 <!-- PAGES -->
@@ -1094,7 +1094,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
 
     <!-- Status Card -->
     <div id="live-status-card" class="card">
-      <div class="card-hd">🔴 LIVE TRADING<span id="live-status-badge" style="font-weight:900;color:var(--red)">DISABLED</span></div>
+      <div class="card-hd">LIVE TRADING<span id="live-status-badge" style="font-weight:900;color:var(--red)">DISABLED</span></div>
       <div style="padding:12px">
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px">
           <div class="mi"><div class="mi-l">DAILY P&L</div><div id="live-daily-pnl" class="mi-v" style="font-size:18px">₹0</div></div>
@@ -1108,7 +1108,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
         </div>
         <!-- Warning -->
         <div style="background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.3);border-radius:4px;padding:10px 12px;font-size:9px;color:var(--yellow);line-height:1.8">
-          ⚠ REAL MONEY — 1 lot (15 qty) only · Stop at ₹2,000 daily loss · Market orders · Intraday only
+          REAL MONEY - 1 lot (15 qty) only | Stop at Rs.2,000 daily loss | Market orders | Intraday only
         </div>
       </div>
     </div>
@@ -1231,11 +1231,15 @@ setInterval(() => {
 
 // ═══════════════ TAB NAVIGATION ═══════════════
 function goTab(i) {
-  document.querySelectorAll('.tab').forEach((t,j) => t.classList.toggle('on', i===j));
-  document.querySelectorAll('.page').forEach((p,j) => p.classList.toggle('on', i===j));
-  if (i === 1) setTimeout(() => { if (!lwC) initChart(); else loadChart(1); }, 100);
-  if (i === 4) fetchTrades();
-  if (i === 5) fetchLiveStatus();
+  try {
+    document.querySelectorAll('.tab').forEach((t,j) => t.classList.toggle('on', i===j));
+    document.querySelectorAll('.page').forEach((p,j) => p.classList.toggle('on', i===j));
+    if (i === 1) setTimeout(function(){ try{ if (!lwC) initChart(); else loadChart(1); }catch(e){} }, 100);
+    if (i === 4) try{ fetchTrades(); }catch(e){}
+    if (i === 5) try{ fetchLiveStatus(); }catch(e){}
+  } catch(e) {
+    console.error('goTab error:', e);
+  }
 }
 
 // ═══════════════ PRICE FETCH ═══════════════
@@ -1921,6 +1925,11 @@ async function askAria() {
 });
 
 // ═══════════════ BOOT ═══════════════
+// Global error handler - prevent JS errors from breaking UI
+window.onerror = function(msg, src, line, col, err) {
+  console.error('JS Error:', msg, 'Line:', line);
+  return true; // prevent default error handling
+};
 setConn(true, false, '');
 fetchFromServer();
 setInterval(fetchFromServer, 5000);
@@ -2011,13 +2020,13 @@ function renderLiveStatus(d) {
 }
 
 async function enableLive() {
-  if (!confirm('⚠ REAL MONEY WARNING\n\nThis will place REAL orders on Upstox with your actual money.\n\nSettings:\n- 1 lot (15 qty) per trade\n- ₹10,000 max capital\n- Stop at ₹2,000 daily loss\n\nAre you sure you want to enable live trading?')) return;
+  if (!confirm('REAL MONEY WARNING\nThis places REAL orders on Upstox.\n1 lot only | Max Rs.10,000 | Stop at Rs.2,000 loss\nAre you sure?')) return;
   const res = await fetch('/api/live/enable', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({lots: 1, max_capital: 10000, max_daily_loss: 2000})
   });
   const d = await res.json();
-  if (d.ok) { toast('✅ Live trading ENABLED — 1 lot, ₹10K limit'); fetchLiveStatus(); }
+  if (d.ok) { toast('Live trading ENABLED - 1 lot, Rs.10K limit'); fetchLiveStatus(); }
   else toast('Error: ' + d.error);
 }
 
@@ -2051,7 +2060,7 @@ function checkLiveTrade(sig) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({signal: sig.signal==='BUY'?'BUY':'SELL', otype: sig.otype, strike: sig.strike, sl: sig.sl, t1: sig.t1, t2: sig.t2, conf})
     }).then(function(r) { return r.json(); }).then(function(d) {
-      if (d.ok) toast('🔴 LIVE ORDER PLACED: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike.toLocaleString('en-IN'));
+      if (d.ok) toast('LIVE ORDER PLACED: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike.toLocaleString('en-IN'));
       else toast('Live order failed: ' + d.error);
       fetchLiveStatus();
     });
