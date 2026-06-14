@@ -1,5 +1,5 @@
 """
-BN Terminal Server -- Upstox Edition (All-in-One)
+BN Terminal Server — Upstox Edition (All-in-One)
 ==================================================
 Terminal is served directly from this server.
 No HTML file needed on your device.
@@ -8,7 +8,7 @@ After deploying to Railway:
 1. Open https://your-railway-url.up.railway.app
 2. Click Login with Upstox (one time)
 3. Then open https://your-railway-url.up.railway.app/terminal
-   on any device -- phone, laptop, anywhere
+   on any device — phone, laptop, anywhere
 
 SETUP:
   pip install flask flask-cors requests gunicorn
@@ -54,12 +54,12 @@ LAST_SESSION_FILE = "last_session.json"
 TRADES_FILE = "paper_trades.json"
 
 
-# ------------------- PHASE 2 -- END OF DAY LEARNING -------------------
+# ═══════════════════ PHASE 2 — END OF DAY LEARNING ═══════════════════
 LEARNING_FILE = "learning_log.json"
 learning = {"days": [], "signal_stats": {}, "pattern_weights": {}}
 
 
-# ------------------- PHASE 3 -- ADAPTIVE SIGNAL WEIGHTS -------------------
+# ═══════════════════ PHASE 3 — ADAPTIVE SIGNAL WEIGHTS ═══════════════════
 def get_adaptive_confidence_boost(otype, vix):
     """
     Phase 3: Return confidence adjustment based on learned patterns.
@@ -99,7 +99,7 @@ def save_learning():
         print(f"[LEARN] Save error: {e}")
 
 def end_of_day_review():
-    """Run at market close -- analyze today's trades and learn."""
+    """Run at market close — analyze today's trades and learn."""
     from datetime import timezone, timedelta
     ist = timezone(timedelta(hours=5, minutes=30))
     today = datetime.now(timezone.utc).astimezone(ist).strftime("%Y-%m-%d")
@@ -127,7 +127,7 @@ def end_of_day_review():
     day_move = round(spot_close - spot_open, 0) if spot_open else 0
     day_direction = "UP" if day_move > 0 else "DOWN" if day_move < 0 else "FLAT"
     
-    # Analyze each trade -- was signal direction correct?
+    # Analyze each trade — was signal direction correct?
     for t in trades_today:
         signal_type = t.get("otype", "")
         correct_direction = (signal_type == "CE" and day_direction == "UP") or                            (signal_type == "PE" and day_direction == "DOWN")
@@ -189,22 +189,22 @@ def generate_lessons(trades, day_direction, vix):
     if correct == len(trades):
         lessons.append("All signals correct direction today")
     elif correct == 0:
-        lessons.append(f"All signals wrong direction -- market was {day_direction}, need to improve trend detection")
+        lessons.append(f"All signals wrong direction — market was {day_direction}, need to improve trend detection")
     else:
         lessons.append(f"{correct}/{len(trades)} signals correct direction")
     
     # Lesson 2: Exit quality
     sl_hits = sum(1 for t in losses if "STOP LOSS" in t.get("reason",""))
     if sl_hits > 1:
-        lessons.append(f"SL hit {sl_hits} times -- consider wider stops on VIX {vix:.0f} days")
+        lessons.append(f"SL hit {sl_hits} times — consider wider stops on VIX {vix:.0f} days")
     
     early_exits = sum(1 for t in wins if "RSI" in t.get("reason","") or "TRAIL" in t.get("reason",""))
     if early_exits > 0:
-        lessons.append(f"Brain exited {early_exits} trade(s) early -- check if more profit was available")
+        lessons.append(f"Brain exited {early_exits} trade(s) early — check if more profit was available")
     
     # Lesson 3: VIX context
     if vix > 22:
-        lessons.append(f"High VIX day ({vix:.1f}) -- volatile conditions, wider SL needed")
+        lessons.append(f"High VIX day ({vix:.1f}) — volatile conditions, wider SL needed")
     
     return lessons
 
@@ -232,7 +232,7 @@ def update_pattern_weights(trades, vix, day_direction):
                 learning["pattern_weights"][pattern_key] * 0.95)
 
 
-# ------------------- LIVE TRADING MODULE -------------------
+# ═══════════════════ LIVE TRADING MODULE ═══════════════════
 # Real money trading via Upstox API
 # Start small: 1 lot only, ₹10,000 max, ₹2,000 daily loss limit
 
@@ -604,16 +604,16 @@ def open_trade(signal, spot, vix):
     if paper["daily"]["date"] != today_str:
         paper["daily"] = {"date": today_str, "trades": 0, "pnl": 0, "last_trade_time": 0}
 
-    # Signal-based trading -- no fixed limit, just daily loss protection
+    # Signal-based trading — no fixed limit, just daily loss protection
     max_loss = paper["capital"] * (RULES.get("max_daily_loss_pct", 2.0) / 100)
     if paper["daily"]["pnl"] <= -max_loss:
-        print(f"[PAPER] Daily loss limit reached -- no more trades today")
+        print(f"[PAPER] Daily loss limit reached — no more trades today")
         return
 
     # Rule: max daily loss - 2% of capital
     max_loss = paper["capital"] * (RULES.get("max_daily_loss_pct", 2.0) / 100)
     if paper["daily"]["pnl"] <= -max_loss:
-        print(f"[PAPER] Daily loss limit hit: ₹{paper['daily']['pnl']:,.0f} / -₹{max_loss:.0f} -- stopping for today")
+        print(f"[PAPER] Daily loss limit hit: ₹{paper['daily']['pnl']:,.0f} / -₹{max_loss:.0f} — stopping for today")
         return
 
     # Rule: trading hours
@@ -621,17 +621,17 @@ def open_trade(signal, spot, vix):
     start_mins = RULES["no_trade_before"][0] * 60 + RULES["no_trade_before"][1]
     end_mins = RULES["no_trade_after"][0] * 60 + RULES["no_trade_after"][1]
     if cur_mins < start_mins:
-        print(f"[PAPER] Too early -- before {RULES['no_trade_before'][0]}:{RULES['no_trade_before'][1]:02d} IST")
+        print(f"[PAPER] Too early — before {RULES['no_trade_before'][0]}:{RULES['no_trade_before'][1]:02d} IST")
         return
     if cur_mins > end_mins:
-        print(f"[PAPER] Too late -- after {RULES['no_trade_after'][0]}:{RULES['no_trade_after'][1]:02d} IST")
+        print(f"[PAPER] Too late — after {RULES['no_trade_after'][0]}:{RULES['no_trade_after'][1]:02d} IST")
         return
 
     # Rule: min gap between trades
     elapsed = time.time() - paper["daily"]["last_trade_time"]
     if paper["daily"]["last_trade_time"] > 0 and elapsed < RULES["min_gap_minutes"] * 60:
         wait = int((RULES["min_gap_minutes"] * 60 - elapsed) / 60)
-        print(f"[PAPER] Too soon -- wait {wait} more minutes")
+        print(f"[PAPER] Too soon — wait {wait} more minutes")
         return
     otype = signal.get("otype", "CE")
     strike = signal.get("strike", round(spot/100)*100)
@@ -808,7 +808,7 @@ def is_market_open():
     ist_now = datetime.now(timezone.utc).astimezone(ist)
     weekday = ist_now.weekday()
     if weekday >= 5:  # Saturday or Sunday
-        print(f"[MARKET] Weekend -- closed")
+        print(f"[MARKET] Weekend — closed")
         return False
     cur = ist_hour * 60 + ist_min
     open_ok = (9 * 60 + 15) <= cur <= (15 * 60 + 30)
@@ -911,41 +911,41 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
     <div id="logo-dot"></div>
     <div>
       <span style="display:block">BN TERMINAL</span>
-      <span id="logo-sub">UPSTOX . LIVE</span>
+      <span id="logo-sub">UPSTOX · LIVE</span>
     </div>
   </div>
   <div id="conn-pill">
     <div class="bd"></div>
     <span id="conn-txt">CLOSED</span>
   </div>
-  <div id="clock">--:--:-- IST</div>
+  <div id="clock">—:—:— IST</div>
 </div>
 
 <!-- PRICE STRIP -->
 <div id="pricestrip">
   <div>
-    <div id="spot-big">₹--</div>
-    <div id="chg">--</div>
+    <div id="spot-big">₹—</div>
+    <div id="chg">—</div>
   </div>
-  <div class="ohlv"><div class="ohlv-l">OPEN</div><div class="ohlv-v" id="d-o">--</div></div>
-  <div class="ohlv"><div class="ohlv-l">HIGH</div><div class="ohlv-v" id="d-h" style="color:var(--green)">--</div></div>
-  <div class="ohlv"><div class="ohlv-l">LOW</div><div class="ohlv-v" id="d-l" style="color:var(--red)">--</div></div>
-  <div class="ohlv"><div class="ohlv-l">VWAP</div><div class="ohlv-v" id="d-vw">--</div></div>
-  <div id="autolive-badge">AUTO-LIVE<br><span id="upd-ts">--</span></div>
+  <div class="ohlv"><div class="ohlv-l">OPEN</div><div class="ohlv-v" id="d-o">—</div></div>
+  <div class="ohlv"><div class="ohlv-l">HIGH</div><div class="ohlv-v" id="d-h" style="color:var(--green)">—</div></div>
+  <div class="ohlv"><div class="ohlv-l">LOW</div><div class="ohlv-v" id="d-l" style="color:var(--red)">—</div></div>
+  <div class="ohlv"><div class="ohlv-l">VWAP</div><div class="ohlv-v" id="d-vw">—</div></div>
+  <div id="autolive-badge">AUTO-LIVE<br><span id="upd-ts">—</span></div>
 </div>
 
 <!-- GLOBALS BAR -->
 <div id="globalsbar">
-  <div class="g-item"><span class="g-l">VIX</span><span class="g-v" id="g-vix">--</span></div>
-  <div class="g-item"><span class="g-l">PCR</span><span class="g-v" id="g-pcr">--</span></div>
-  <div class="g-item"><span class="g-l">S&P</span><span class="g-v" id="g-sp">--</span></div>
-  <div class="g-item"><span class="g-l">CRUDE</span><span class="g-v" id="g-cr">--</span></div>
-  <div class="g-item"><span class="g-l">GOLD</span><span class="g-v" id="g-gd">--</span></div>
-  <div class="g-item"><span class="g-l">₹/USD</span><span class="g-v" id="g-usd">--</span></div>
+  <div class="g-item"><span class="g-l">VIX</span><span class="g-v" id="g-vix">—</span></div>
+  <div class="g-item"><span class="g-l">PCR</span><span class="g-v" id="g-pcr">—</span></div>
+  <div class="g-item"><span class="g-l">S&P</span><span class="g-v" id="g-sp">—</span></div>
+  <div class="g-item"><span class="g-l">CRUDE</span><span class="g-v" id="g-cr">—</span></div>
+  <div class="g-item"><span class="g-l">GOLD</span><span class="g-v" id="g-gd">—</span></div>
+  <div class="g-item"><span class="g-l">₹/USD</span><span class="g-v" id="g-usd">—</span></div>
 </div>
 
 <!-- SESSION BAR -->
-<div id="sessionbar">MARKET CLOSED . <span id="session-txt">Showing last session</span></div>
+<div id="sessionbar">MARKET CLOSED · <span id="session-txt">Showing last session</span></div>
 
 <!-- TABS -->
 <div id="tabbar">
@@ -963,40 +963,40 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <!-- PAGE 0: SIGNAL -->
   <div class="page on" id="page-0">
     <div class="card">
-      <div class="card-hd">SIGNAL ENGINE<span id="sig-ts">--</span></div>
+      <div class="card-hd">SIGNAL ENGINE<span id="sig-ts">—</span></div>
       <div id="sig-body" style="padding:16px;text-align:center;color:var(--muted);font-size:10px">Waiting for data...</div>
     </div>
     <div class="card">
       <div class="card-hd">DAY BIAS</div>
-      <div id="tl" style="padding:10px 12px;font-family:var(--cond);font-size:14px;font-weight:700;color:var(--muted)">--</div>
+      <div id="tl" style="padding:10px 12px;font-family:var(--cond);font-size:14px;font-weight:700;color:var(--muted)">—</div>
     </div>
     <div class="card">
       <div class="card-hd">LIVE INDICATORS</div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:var(--bdr)">
-        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">EMA 9</div><div class="mi-v" id="i-e9" style="font-size:14px">--</div><div id="i-e9b" style="height:3px;background:var(--green);width:30%;margin-top:4px"></div></div>
-        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">EMA 21</div><div class="mi-v" id="i-e21" style="font-size:14px">--</div></div>
-        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">RSI 14</div><div class="mi-v" id="i-rsi" style="font-size:14px">--</div><div id="i-rsib" style="height:3px;background:var(--yellow);width:50%;margin-top:4px"></div></div>
-        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">VWAP</div><div class="mi-v" id="i-vwap" style="font-size:14px;color:var(--teal)">--</div></div>
-        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">S.TREND</div><div class="mi-v" id="i-st" style="font-size:14px">--</div></div>
-        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">PCR</div><div class="mi-v" id="i-pcr" style="font-size:14px">--</div></div>
+        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">EMA 9</div><div class="mi-v" id="i-e9" style="font-size:14px">—</div><div id="i-e9b" style="height:3px;background:var(--green);width:30%;margin-top:4px"></div></div>
+        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">EMA 21</div><div class="mi-v" id="i-e21" style="font-size:14px">—</div></div>
+        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">RSI 14</div><div class="mi-v" id="i-rsi" style="font-size:14px">—</div><div id="i-rsib" style="height:3px;background:var(--yellow);width:50%;margin-top:4px"></div></div>
+        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">VWAP</div><div class="mi-v" id="i-vwap" style="font-size:14px;color:var(--teal)">—</div></div>
+        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">S.TREND</div><div class="mi-v" id="i-st" style="font-size:14px">—</div></div>
+        <div style="background:var(--bg2);padding:8px 10px"><div class="mi-l">PCR</div><div class="mi-v" id="i-pcr" style="font-size:14px">—</div></div>
       </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
       <div class="card">
         <div class="card-hd">PCR (OI)</div>
-        <div style="padding:10px 12px"><div class="mi-v" id="m-pcr" style="font-size:20px">--</div><div id="m-pcr-l" style="font-size:8px;color:var(--muted);margin-top:2px">--</div></div>
+        <div style="padding:10px 12px"><div class="mi-v" id="m-pcr" style="font-size:20px">—</div><div id="m-pcr-l" style="font-size:8px;color:var(--muted);margin-top:2px">—</div></div>
       </div>
       <div class="card">
         <div class="card-hd">MAX PAIN</div>
-        <div style="padding:10px 12px"><div class="mi-v" id="m-mp" style="font-size:20px;color:var(--yellow)">--</div><div style="font-size:8px;color:var(--muted);margin-top:2px">↑ strike</div></div>
+        <div style="padding:10px 12px"><div class="mi-v" id="m-mp" style="font-size:20px;color:var(--yellow)">—</div><div style="font-size:8px;color:var(--muted);margin-top:2px">↑ strike</div></div>
       </div>
       <div class="card">
         <div class="card-hd">VIX</div>
-        <div style="padding:10px 12px"><div class="mi-v" id="m-vix" style="font-size:20px">--</div><div id="m-vix-l" style="font-size:8px;color:var(--muted);margin-top:2px">--</div></div>
+        <div style="padding:10px 12px"><div class="mi-v" id="m-vix" style="font-size:20px">—</div><div id="m-vix-l" style="font-size:8px;color:var(--muted);margin-top:2px">—</div></div>
       </div>
       <div class="card">
         <div class="card-hd">TOTAL OI</div>
-        <div style="padding:10px 12px"><div class="mi-v" id="m-toi" style="font-size:20px">--</div><div style="font-size:8px;color:var(--muted);margin-top:2px">CE+PE Lakh</div></div>
+        <div style="padding:10px 12px"><div class="mi-v" id="m-toi" style="font-size:20px">—</div><div style="font-size:8px;color:var(--muted);margin-top:2px">CE+PE Lakh</div></div>
       </div>
     </div>
     <div class="card">
@@ -1014,7 +1014,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div class="page" id="page-1">
     <div class="chart-wrap">
       <div class="chart-hd">
-        <span style="font-family:var(--cond);font-size:11px;font-weight:700;color:var(--muted)">BANKNIFTY . UPSTOX LIVE</span>
+        <span style="font-family:var(--cond);font-size:11px;font-weight:700;color:var(--muted)">BANKNIFTY · UPSTOX LIVE</span>
         <button class="tf on" onclick="loadChart(1)">1m</button>
       </div>
       <div class="chart-body">
@@ -1022,9 +1022,9 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
         <div id="chart-loading" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-family:var(--cond);font-size:11px;color:var(--muted);font-weight:700;letter-spacing:0.1em">LOADING CHART...</div>
       </div>
       <div style="padding:6px 10px;display:flex;gap:12px;align-items:center;font-size:8px;color:var(--muted)">
-        <span>-- <span style="color:var(--green)">EMA 9</span></span>
-        <span>-- <span style="color:var(--orange)">EMA 21</span></span>
-        <span>-- <span style="color:var(--yellow)">VWAP</span></span>
+        <span>— <span style="color:var(--green)">EMA 9</span></span>
+        <span>— <span style="color:var(--orange)">EMA 21</span></span>
+        <span>— <span style="color:var(--yellow)">VWAP</span></span>
       </div>
     </div>
   </div>
@@ -1048,7 +1048,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <!-- PAGE 3: ARIA -->
   <div class="page" id="page-3">
     <div class="card">
-      <div class="card-hd">ARIA . AI TRADING ANALYST</div>
+      <div class="card-hd">ARIA · AI TRADING ANALYST</div>
       <div id="aria-msgs"></div>
       <div style="display:flex;border-top:1px solid var(--bdr)">
         <input id="aria-input" placeholder="Ask ARIA about market conditions..." onkeydown="if(event.key==='Enter')askAria()">
@@ -1061,13 +1061,13 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div class="page" id="page-4">
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:8px">
       <div class="mi"><div class="mi-l">CAPITAL</div><div class="mi-v" style="font-size:16px">&#8377;1,00,000</div></div>
-      <div class="mi"><div class="mi-l">AVAILABLE</div><div id="pt-avail" class="mi-v" style="font-size:16px;color:var(--teal)">--</div></div>
-      <div class="mi"><div class="mi-l">TOTAL P&L</div><div id="pt-pnl" class="mi-v" style="font-size:16px">--</div></div>
-      <div class="mi"><div class="mi-l">WIN RATE</div><div id="pt-wr" class="mi-v" style="font-size:16px">--</div></div>
+      <div class="mi"><div class="mi-l">AVAILABLE</div><div id="pt-avail" class="mi-v" style="font-size:16px;color:var(--teal)">—</div></div>
+      <div class="mi"><div class="mi-l">TOTAL P&L</div><div id="pt-pnl" class="mi-v" style="font-size:16px">—</div></div>
+      <div class="mi"><div class="mi-l">WIN RATE</div><div id="pt-wr" class="mi-v" style="font-size:16px">—</div></div>
     </div>
     <div class="card">
       <div class="card-hd">OPEN POSITION<span id="pt-open-time" style="font-weight:400;color:var(--muted)"></span></div>
-      <div id="pt-open-body" style="padding:14px;text-align:center;color:var(--muted);font-size:10px">No open position -- waiting for signal</div>
+      <div id="pt-open-body" style="padding:14px;text-align:center;color:var(--muted);font-size:10px">No open position — waiting for signal</div>
     </div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <button onclick="manualClose()" style="flex:1;padding:10px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:13px;font-weight:800;cursor:pointer;border-radius:4px">CLOSE TRADE</button>
@@ -1159,7 +1159,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
 </div>
 
 <script>
-// --------------- STATE ---------------
+// ═══════════════ STATE ═══════════════
 const S = {
   spot:0, open:0, high:0, low:0, vwap:0, change:0, pct:0,
   vix:0, pcr:0, sp500chg:0, crudechg:0, goldchg:0, usdinr:0,
@@ -1168,7 +1168,7 @@ const S = {
 let prevSig = null;
 let lastSignalFired = null;
 
-// --------------- UTILITIES ---------------
+// ═══════════════ UTILITIES ═══════════════
 const f = n => Math.round(Math.abs(n||0)).toLocaleString('en-IN');
 const fp = n => (n>=0?'+':'-') + '₹' + f(n);
 const fc = n => n>=0 ? 'var(--green)' : 'var(--red)';
@@ -1187,7 +1187,7 @@ function log(m, ok) {
   el.style.color = ok === true ? 'var(--green)' : ok === false ? 'var(--red)' : 'var(--muted)';
 }
 
-// --------------- CONNECTION ---------------
+// ═══════════════ CONNECTION ═══════════════
 function setConn(ok, marketOpen, info) {
   const pill = document.getElementById('conn-pill');
   const txt = document.getElementById('conn-txt');
@@ -1220,7 +1220,7 @@ function hideLoginOverlay() {
   document.getElementById('login-overlay').classList.remove('show');
 }
 
-// --------------- CLOCK ---------------
+// ═══════════════ CLOCK ═══════════════
 setInterval(() => {
   const now = new Date(Date.now() + 5.5*3600000);
   document.getElementById('clock').textContent =
@@ -1229,7 +1229,7 @@ setInterval(() => {
     String(now.getUTCSeconds()).padStart(2,'0') + ' IST';
 }, 1000);
 
-// --------------- TAB NAVIGATION ---------------
+// ═══════════════ TAB NAVIGATION ═══════════════
 function goTab(i) {
   try {
     document.querySelectorAll('.tab').forEach((t,j) => t.classList.toggle('on', i===j));
@@ -1242,7 +1242,7 @@ function goTab(i) {
   }
 }
 
-// --------------- PRICE FETCH ---------------
+// ═══════════════ PRICE FETCH ═══════════════
 async function fetchFromServer() {
   try {
     const res = await fetch('/api/price', {cache:'no-store'});
@@ -1260,7 +1260,7 @@ async function fetchFromServer() {
     const spot = d.spot || 0;
     if (spot < 30000) {
       setConn(true, false, d.last_session_time || '');
-      log('Market closed . Last: ' + (d.last_session_time || '--'), null);
+      log('Market closed · Last: ' + (d.last_session_time || '—'), null);
       return;
     }
 
@@ -1289,12 +1289,12 @@ async function fetchFromServer() {
     }
     if (S.candles.length > 300) S.candles = S.candles.slice(-300);
 
-    document.getElementById('upd-ts').textContent = d.last_updated || '--';
+    document.getElementById('upd-ts').textContent = d.last_updated || '—';
     setConn(true, d.market_open === true, d.last_session_time || '');
 
     const using_last = d.using_last_session;
     const isLive = d.market_open === true && !using_last;
-    log((isLive ? 'Live' : 'Last session') + ' . BN ₹' + f(spot) + ' . VIX ' + (S.vix||'--'), isLive ? true : null);
+    log((isLive ? 'Live' : 'Last session') + ' · BN ₹' + f(spot) + ' · VIX ' + (S.vix||'—'), isLive ? true : null);
 
     updatePriceDisplay();
     renderAll();
@@ -1312,7 +1312,7 @@ function updatePriceDisplay() {
   el.className = cc(S.change);
 
   const chg = document.getElementById('chg');
-  chg.textContent = (S.change>=0?'^':'v') + Math.abs(S.change).toFixed(2) + ' (' + Math.abs(S.pct).toFixed(2) + '%)';
+  chg.textContent = (S.change>=0?'▲':'▼') + Math.abs(S.change).toFixed(2) + ' (' + Math.abs(S.pct).toFixed(2) + '%)';
   chg.className = cc(S.change);
 
   document.getElementById('d-o').textContent = f(S.open);
@@ -1321,22 +1321,22 @@ function updatePriceDisplay() {
   document.getElementById('d-vw').textContent = f(S.vwap);
 
   const vix = document.getElementById('g-vix');
-  vix.textContent = S.vix ? S.vix.toFixed(1) : '--';
+  vix.textContent = S.vix ? S.vix.toFixed(1) : '—';
   vix.className = 'g-v ' + (S.vix>20?'dn':S.vix>15?'neu':'up');
 
   const pcr = document.getElementById('g-pcr');
-  pcr.textContent = S.pcr ? S.pcr.toFixed(2) : '--';
+  pcr.textContent = S.pcr ? S.pcr.toFixed(2) : '—';
   pcr.className = 'g-v ' + (S.pcr>=1.2?'up':S.pcr>=0.9?'neu':'dn');
 
   [['g-sp',S.sp500chg],['g-cr',S.crudechg],['g-gd',S.goldchg]].forEach(([id,v]) => {
     const el = document.getElementById(id);
-    el.textContent = v ? (v>=0?'+':'')+v.toFixed(2)+'%' : '--';
+    el.textContent = v ? (v>=0?'+':'')+v.toFixed(2)+'%' : '—';
     el.className = 'g-v ' + cc(v);
   });
-  document.getElementById('g-usd').textContent = S.usdinr ? S.usdinr.toFixed(1) : '--';
+  document.getElementById('g-usd').textContent = S.usdinr ? S.usdinr.toFixed(1) : '—';
 }
 
-// --------------- MATH HELPERS ---------------
+// ═══════════════ MATH HELPERS ═══════════════
 function ema(data, period) {
   if (data.length < period) return data[data.length-1] || 0;
   const k = 2/(period+1);
@@ -1389,7 +1389,7 @@ function calcPivots(candles) {
   };
 }
 
-// --------------- MARKET BEHAVIOUR ---------------
+// ═══════════════ MARKET BEHAVIOUR ═══════════════
 function readMarketBehaviour(cs, spot, vix) {
   if (cs.length < 5) return {behaviour:'UNKNOWN', strength:0, action:'WAIT', reason:'Need more data'};
   const cl = cs.map(c=>c.c);
@@ -1445,7 +1445,7 @@ function readMarketBehaviour(cs, spot, vix) {
   return {behaviour, strength, action, reason, rs, e9, e21, vw, ptMove};
 }
 
-// --------------- SIGNAL ENGINE v3 ---------------
+// ═══════════════ SIGNAL ENGINE v3 ═══════════════
 function computeTrend(cs, spot) {
   if (cs.length<3) return null;
   const cl = cs.map(c=>c.c);
@@ -1456,7 +1456,7 @@ function computeTrend(cs, spot) {
   const bs=bulls.filter(Boolean).length, br=bears.filter(Boolean).length, net=bs-br;
   let label,col,strat;
   if(net>=5){label='STRONGLY BULLISH';col='var(--green)';strat='Strong uptrend';}
-  else if(net>=3){label='BULLISH';col='#66BB6A';strat='Bullish -- buy pullbacks';}
+  else if(net>=3){label='BULLISH';col='#66BB6A';strat='Bullish — buy pullbacks';}
   else if(net>=1){label='MILDLY BULLISH';col='var(--teal)';strat='Cautious CE only';}
   else if(net>=-1){label='SIDEWAYS';col='var(--yellow)';strat='Wait for breakout';}
   else if(net>=-3){label='MILDLY BEARISH';col='#FFA040';strat='Cautious PE only';}
@@ -1477,8 +1477,8 @@ function computeSignal(cs, spot) {
   const ist=new Date(Date.now()+5.5*3600000);
   const hh=ist.getUTCHours(), mm=ist.getUTCMinutes();
   const cur=hh*60+mm;
-  if(cur<9*60+20){base.gate='Pre-market -- waiting for 9:20 AM';return base;}
-  if(cur>15*60){base.gate='Market closing -- no new trades';return base;}
+  if(cur<9*60+20){base.gate='Pre-market — waiting for 9:20 AM';return base;}
+  if(cur>15*60){base.gate='Market closing — no new trades';return base;}
   const meta={e9:+e9.toFixed(0),e21:+e21.toFixed(0),rsi:rs,vwap:+vw.toFixed(0),st};
 
   if(beh.action==='BUY_CALL'&&beh.strength>=50){
@@ -1497,7 +1497,7 @@ function computeSignal(cs, spot) {
     return{...base,signal:'SELL',conf:Math.min(78,beh.strength+10),gate:null,otype:'PE',
       sl:spot+120,t1:piv.S1,t2:piv.S2,t3:piv.S3,meta,behaviour:'TREND_CONTINUATION',regime_note:beh.reason};
   }
-  // Reversal after RSI extreme -- catch the turn
+  // Reversal after RSI extreme — catch the turn
   if(beh.rs>70&&e9<e21&&spot<vw){
     return{...base,signal:'SELL',conf:72,gate:null,otype:'PE',
       sl:spot+100,t1:piv.S1,t2:piv.S2,t3:piv.S3,meta,behaviour:'RSI_REVERSAL_DOWN',regime_note:'RSI overbought reversal'};
@@ -1526,7 +1526,7 @@ function computeSignal(cs, spot) {
     pivots:piv,cl:conds,bs,br,meta,behaviour:beh.behaviour,regime_note:beh.reason};
 }
 
-// --------------- RENDER ---------------
+// ═══════════════ RENDER ═══════════════
 function renderAll() {
   if (!S.spot) return;
   const t = computeTrend(S.candles, S.spot);
@@ -1554,15 +1554,15 @@ function renderAll() {
     }
   }
   if (prevSig && prevSig!=='WAIT' && sig.signal!==prevSig && sig.signal!=='WAIT') {
-    toast('Signal: '+prevSig+' -> '+sig.signal);
+    toast('Signal: '+prevSig+' → '+sig.signal);
   }
   prevSig = sig.signal;
 }
 
 function renderTrend(t) {
   const el = document.getElementById('tl');
-  if (!t) { el.textContent = S.candles.length<5?'Collecting...':'--'; el.style.color='var(--muted)'; return; }
-  el.textContent = t.label + ' . ' + t.strat;
+  if (!t) { el.textContent = S.candles.length<5?'Collecting...':'—'; el.style.color='var(--muted)'; return; }
+  el.textContent = t.label + ' · ' + t.strat;
   el.style.color = t.col;
 }
 
@@ -1573,7 +1573,7 @@ function renderSignal(sig) {
   ts.textContent = String(ist.getUTCHours()).padStart(2,'0')+':'+String(ist.getUTCMinutes()).padStart(2,'0')+' IST';
   if (!sig || sig.signal==='WAIT') {
     const msg = sig && sig.gate ? sig.gate : 'Analyzing market...';
-    body.innerHTML = '<div style="padding:20px;text-align:center"><div style="font-size:32px;margin-bottom:8px">wait</div><div style="font-family:var(--cond);font-size:16px;color:var(--muted)">WAIT</div><div style="font-size:9px;color:var(--muted);margin-top:6px">' + msg + '</div></div>';
+    body.innerHTML = '<div style="padding:20px;text-align:center"><div style="font-size:32px;margin-bottom:8px">⏳</div><div style="font-family:var(--cond);font-size:16px;color:var(--muted)">WAIT</div><div style="font-size:9px;color:var(--muted);margin-top:6px">' + msg + '</div></div>';
     return;
   }
   const isBuy = sig.otype==='CE';
@@ -1597,42 +1597,42 @@ function renderSignal(sig) {
       <div style="flex:1;background:var(--bg2);padding:8px 10px;border-left:3px solid var(--green)"><div class="mi-l">TARGET 2</div><div style="font-family:var(--cond);font-size:14px;font-weight:900;color:var(--green)">${Math.round(sig.t2||0).toLocaleString('en-IN')}</div></div>
       <div style="flex:1;background:var(--bg2);padding:8px 10px;border-left:3px solid #888"><div class="mi-l">TARGET 3</div><div style="font-family:var(--cond);font-size:14px;font-weight:900;color:var(--muted)">${Math.round(sig.t3||0).toLocaleString('en-IN')}</div></div>
     </div>
-    <div style="padding:8px 12px;font-size:8px;color:var(--muted)">Bull: ${sig.bs||0}/8 . Bear: ${sig.br||0}/8 . Spot: ₹${f(S.spot)} . VWAP: ₹${f(sig.meta&&sig.meta.vwap||0)}</div>`;
+    <div style="padding:8px 12px;font-size:8px;color:var(--muted)">Bull: ${sig.bs||0}/8 · Bear: ${sig.br||0}/8 · Spot: ₹${f(S.spot)} · VWAP: ₹${f(sig.meta&&sig.meta.vwap||0)}</div>`;
 }
 
 function renderInds(meta) {
   if (!meta) return;
   const e9 = meta.e9||0, e21 = meta.e21||0, rs = meta.rsi||50;
-  document.getElementById('i-e9').textContent = e9 ? e9.toLocaleString('en-IN') : '--';
+  document.getElementById('i-e9').textContent = e9 ? e9.toLocaleString('en-IN') : '—';
   document.getElementById('i-e9').style.color = e9>e21 ? 'var(--green)' : 'var(--red)';
-  document.getElementById('i-e21').textContent = e21 ? e21.toLocaleString('en-IN') : '--';
-  document.getElementById('i-rsi').textContent = rs ? Math.round(rs) : '--';
+  document.getElementById('i-e21').textContent = e21 ? e21.toLocaleString('en-IN') : '—';
+  document.getElementById('i-rsi').textContent = rs ? Math.round(rs) : '—';
   document.getElementById('i-rsi').style.color = rs>70?'var(--red)':rs<30?'var(--green)':'var(--yellow)';
   document.getElementById('i-rsib').style.width = (rs||50)+'%';
   document.getElementById('i-rsib').style.background = rs>70?'var(--red)':rs<30?'var(--green)':'var(--yellow)';
-  document.getElementById('i-vwap').textContent = meta.vwap ? f(meta.vwap) : '--';
+  document.getElementById('i-vwap').textContent = meta.vwap ? f(meta.vwap) : '—';
   const st = meta.st;
   const stEl = document.getElementById('i-st');
-  stEl.textContent = st ? (st.bull?'BULL ^':'BEAR v') : '--';
+  stEl.textContent = st ? (st.bull?'BULL ▲':'BEAR ▼') : '—';
   stEl.style.color = st ? (st.bull?'var(--green)':'var(--red)') : 'var(--muted)';
-  document.getElementById('i-pcr').textContent = S.pcr ? S.pcr.toFixed(2) : '--';
+  document.getElementById('i-pcr').textContent = S.pcr ? S.pcr.toFixed(2) : '—';
   document.getElementById('i-e9b').style.width = Math.min(100, e9/(e21||1)*50)+'%';
 }
 
 function renderMinis() {
   const vix = S.vix||0;
   const vixEl = document.getElementById('m-vix');
-  vixEl.textContent = vix ? vix.toFixed(1) : '--';
+  vixEl.textContent = vix ? vix.toFixed(1) : '—';
   vixEl.style.color = vix>25?'var(--red)':vix>18?'var(--yellow)':'var(--green)';
   document.getElementById('m-vix-l').textContent = vix>25?'DANGER':vix>18?'ELEVATED':'NORMAL';
   const pcr = S.pcr||0;
   const pcrEl = document.getElementById('m-pcr');
-  pcrEl.textContent = pcr ? pcr.toFixed(2) : '--';
+  pcrEl.textContent = pcr ? pcr.toFixed(2) : '—';
   pcrEl.style.color = pcr>=1.2?'var(--green)':pcr>=0.9?'var(--yellow)':'var(--red)';
   document.getElementById('m-pcr-l').textContent = pcr>=1.2?'Bullish':pcr>=0.9?'Neutral':'Bearish';
 }
 
-// --------------- SUPPORT & RESISTANCE ---------------
+// ═══════════════ SUPPORT & RESISTANCE ═══════════════
 function renderSR(piv, spot) {
   if (!piv || !spot) return;
   const f2 = n => Math.round(n).toLocaleString('en-IN');
@@ -1653,7 +1653,7 @@ function renderSR(piv, spot) {
   }).join('');
 }
 
-// --------------- CHART ---------------
+// ═══════════════ CHART ═══════════════
 let lwC=null, cSeries=null, e9S=null, e21S=null, vwS=null;
 
 function initChart() {
@@ -1719,7 +1719,7 @@ function updateChartTick(spot, high, low) {
   } catch(e) {}
 }
 
-// --------------- LEVELS PAGE ---------------
+// ═══════════════ LEVELS PAGE ═══════════════
 function updateLevels() {
   if (!S.spot) return;
   const piv = calcPivots(S.candles);
@@ -1727,7 +1727,7 @@ function updateLevels() {
 }
 setInterval(updateLevels, 10000);
 
-// --------------- TRADE BRAIN v1 ---------------
+// ═══════════════ TRADE BRAIN v1 ═══════════════
 const TradeBrain = {
   active:false, direction:null, entry_spot:0, trail_sl:0, highest_profit:0, candles_in_trade:0,
   config:{trail_start_pts:100, trail_distance:60, max_candles:75},
@@ -1772,7 +1772,7 @@ const TradeBrain = {
   }
 };
 
-// --------------- PAPER TRADING ---------------
+// ═══════════════ PAPER TRADING ═══════════════
 async function fetchTrades() {
   try {
     const res = await fetch('/api/trades');
@@ -1816,7 +1816,7 @@ function renderTrades(d) {
         +'</div>';
     } else {
       if(timeEl) timeEl.textContent='';
-      body.innerHTML='<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position -- waiting for signal</div>';
+      body.innerHTML='<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position — waiting for signal</div>';
     }
   }
   const hist=document.getElementById('pt-history');
@@ -1833,7 +1833,7 @@ function renderTrades(d) {
           +'<span style="font-family:var(--cond);font-size:13px;font-weight:900;color:'+(isBuy?'var(--green)':'var(--red)')+'">'+  (isBuy?'BUY CALL':'BUY PUT')+' '+(t.strike||0)+'</span>'
           +'<span style="font-family:var(--cond);font-size:14px;font-weight:900;color:'+col+'">'+fp(t.pnl||0)+'</span>'
           +'</div>'
-          +'<div style="font-size:8px;color:var(--muted)">'+(t.time||'')+'->'+(t.exit_time||'--')+' . '+(t.lots||1)+' lot . ₹'+(t.entry_premium||0)+' -> ₹'+(t.exit_premium||'--')+' . <span style="color:'+col+'">'+(t.reason||'')+'</span></div>'
+          +'<div style="font-size:8px;color:var(--muted)">'+(t.time||'')+'→'+(t.exit_time||'—')+' · '+(t.lots||1)+' lot · ₹'+(t.entry_premium||0)+' → ₹'+(t.exit_premium||'—')+' · <span style="color:'+col+'">'+(t.reason||'')+'</span></div>'
           +'</div>';
       }).join('');
     }
@@ -1853,7 +1853,7 @@ function renderLearning(d) {
     +'</div>';
   if (d.latest_lessons&&d.latest_lessons.length) {
     html+='<div style="font-size:7px;color:var(--muted);letter-spacing:0.1em;margin-bottom:4px">LATEST LESSONS</div>';
-    d.latest_lessons.forEach(l=>{ html+='<div style="font-size:9px;padding:2px 0;border-bottom:1px solid var(--bdr)">-> '+l+'</div>'; });
+    d.latest_lessons.forEach(l=>{ html+='<div style="font-size:9px;padding:2px 0;border-bottom:1px solid var(--bdr)">→ '+l+'</div>'; });
   }
   bodyEl.innerHTML=html;
 }
@@ -1890,7 +1890,7 @@ function checkPaperTrade(sig) {
   }
 }
 
-// --------------- ARIA ---------------
+// ═══════════════ ARIA ═══════════════
 const ARIA_SYS = 'You are ARIA, Bank Nifty options trading assistant. Be brief (2-4 sentences). No markdown.';
 async function askAria() {
   const inp = document.getElementById('aria-input');
@@ -1901,7 +1901,7 @@ async function askAria() {
   msgs.innerHTML += '<div class="aria-msg user">You: '+q+'</div>';
   msgs.scrollTop = msgs.scrollHeight;
   try {
-    const mktCtx = 'BN: ₹'+f(S.spot)+' VIX:'+S.vix+' Signal:'+(S.signal&&S.signal.signal||'WAIT')+' Trend:'+(S.signal&&S.signal.behaviour||'--');
+    const mktCtx = 'BN: ₹'+f(S.spot)+' VIX:'+S.vix+' Signal:'+(S.signal&&S.signal.signal||'WAIT')+' Trend:'+(S.signal&&S.signal.behaviour||'—');
     const res = await fetch('/aria', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,context:mktCtx})});
     const d = await res.json();
     msgs.innerHTML += '<div class="aria-msg bot">ARIA: '+(d.answer||'...')+'</div>';
@@ -1911,7 +1911,7 @@ async function askAria() {
   }
 }
 
-// --------------- RISK CALCULATOR ---------------
+// ═══════════════ RISK CALCULATOR ═══════════════
 ['rc-c','rc-e','rc-s'].forEach(id=>{
   const el=document.getElementById(id);
   if(el) el.addEventListener('input',()=>{
@@ -1924,7 +1924,7 @@ async function askAria() {
   });
 });
 
-// --------------- BOOT ---------------
+// ═══════════════ BOOT ═══════════════
 // Global error handler - prevent JS errors from breaking UI
 window.onerror = function(msg, src, line, col, err) {
   console.error('JS Error:', msg, 'Line:', line);
@@ -2018,7 +2018,7 @@ function checkLiveTrade(sig) {
 
 setInterval(function(){ try{fetchLiveStatus();}catch(e){} }, 10000);
 
-// -- MODAL: replaces confirm() which is blocked in Railway sandbox --
+// Modal replaces confirm() which is blocked in Railway
 function showModal(msg, onOk) {
   var el = document.getElementById('bn-modal');
   document.getElementById('bn-modal-msg').textContent = msg;
@@ -2096,8 +2096,8 @@ def callback():
         return """<html><body style='background:#060A10;color:#00E676;font-family:monospace;padding:40px;text-align:center'>
         <h1 style='color:#FF6D00;font-size:32px'>✓ CONNECTED</h1>
         <p style='font-size:16px;color:#D8E8F8'>Upstox authenticated!<br><br>
-        <a href='/terminal' style='padding:14px 28px;background:#FF6D00;color:#000;font-weight:900;font-size:16px;border-radius:4px;text-decoration:none'>OPEN TERMINAL -></a></p>
-        <p style='color:#4A6070;font-size:11px;margin-top:20px'>Bookmark /terminal -- open it anytime on any device.</p>
+        <a href='/terminal' style='padding:14px 28px;background:#FF6D00;color:#000;font-weight:900;font-size:16px;border-radius:4px;text-decoration:none'>OPEN TERMINAL →</a></p>
+        <p style='color:#4A6070;font-size:11px;margin-top:20px'>Bookmark /terminal — open it anytime on any device.</p>
         </body></html>"""
     except Exception as e:
         return f"Error: {e}", 500
@@ -2499,7 +2499,7 @@ def fetch_loop():
                         print(f"[LEARN] Error: {e}")
                     was_open = False
                 if not historical_loaded:
-                    print("[SESSION] Market closed -- loading historical data.")
+                    print("[SESSION] Market closed — loading historical data.")
                     load_historical_for_display()
                     historical_loaded = True
                 time.sleep(300)
@@ -2513,7 +2513,7 @@ def index():
         return """<html><body style='background:#060A10;color:#D8E8F8;font-family:monospace;padding:40px;text-align:center'>
         <h1 style='color:#FF6D00;font-size:28px;letter-spacing:0.1em'>BN TERMINAL SERVER</h1>
         <p style='color:#4A6070;margin:10px 0 30px'>One-time Upstox login required</p>
-        <a href='/login' style='padding:14px 32px;background:#FF6D00;color:#000;font-weight:900;font-size:16px;border-radius:4px;text-decoration:none;letter-spacing:0.08em'>LOGIN WITH UPSTOX -></a>
+        <a href='/login' style='padding:14px 32px;background:#FF6D00;color:#000;font-weight:900;font-size:16px;border-radius:4px;text-decoration:none;letter-spacing:0.08em'>LOGIN WITH UPSTOX →</a>
         </body></html>"""
     return redirect("/terminal")
 
@@ -2554,7 +2554,7 @@ def candles_api():
 @app.route("/ping")
 def ping(): return "pong"
 
-# --- LIVE TRADING ROUTES ---
+# ═══ LIVE TRADING ROUTES ═══
 
 @app.route("/api/live/status")
 def live_status():
@@ -2591,7 +2591,7 @@ def live_disable():
 
 @app.route("/api/live/signal", methods=["POST"])
 def live_signal():
-    """Called when signal fires -- place real order."""
+    """Called when signal fires — place real order."""
     if not live_config["enabled"]:
         return jsonify({"ok": False, "error": "Live trading disabled"})
     data = request.json or {}
@@ -2654,7 +2654,7 @@ def trades_api():
 
 @app.route("/api/trades/signal", methods=["POST"])
 def trades_signal():
-    """Called when a new signal fires -- open a paper trade."""
+    """Called when a new signal fires — open a paper trade."""
     data = request.json or {}
     sig = data.get("signal")
     spot = cache.get("spot", 0)
@@ -2760,7 +2760,7 @@ def candles_debug():
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("  BN TERMINAL -- UPSTOX ALL-IN-ONE SERVER")
+    print("  BN TERMINAL — UPSTOX ALL-IN-ONE SERVER")
     print("=" * 50)
     load_token()
     load_last_session()
@@ -2768,10 +2768,10 @@ if __name__ == "__main__":
     load_learning()
     if cache["authenticated"]:
         if is_market_open():
-            print("Market open -- fetching live prices...")
+            print("Market open — fetching live prices...")
             fetch_prices()
         else:
-            print("Market closed -- loading historical data...")
+            print("Market closed — loading historical data...")
             load_historical_for_display()
         threading.Thread(target=fetch_loop, daemon=True).start()
         if WS_AVAILABLE:
@@ -2780,6 +2780,6 @@ if __name__ == "__main__":
         else:
             print("[WS] websocket-client not available - using REST polling only")
     else:
-        print("Open http://localhost:5000 -> Login with Upstox")
+        print("Open http://localhost:5000 → Login with Upstox")
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
