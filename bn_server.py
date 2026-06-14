@@ -1934,10 +1934,11 @@ let lastLiveSignal = null;
 
 async function fetchLiveStatus() {
   try {
-    const res = await fetch('/api/live/status');
+    const res = await fetch('/api/live/status', {cache:'no-store'});
+    if (!res.ok) return;
     const d = await res.json();
-    renderLiveStatus(d);
-  } catch(e) {}
+    if (d) renderLiveStatus(d);
+  } catch(e) { /* silent */ }
 }
 
 function renderLiveStatus(d) {
@@ -2057,8 +2058,8 @@ function checkLiveTrade(sig) {
   }
 }
 
-// Poll live status every 5 seconds when on live tab
-setInterval(fetchLiveStatus, 5000);
+// Poll live status every 10 seconds
+setInterval(function(){ try{ fetchLiveStatus(); }catch(e){} }, 10000);
 
 
 </script>
