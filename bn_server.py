@@ -231,6 +231,220 @@ def update_pattern_weights(trades, vix, day_direction):
             learning["pattern_weights"][pattern_key] = max(0.3,
                 learning["pattern_weights"][pattern_key] * 0.95)
 
+
+# ═══════════════════ LIVE TRADING MODULE ═══════════════════
+# Real money trading via Upstox API
+# Start small: 1 lot only, ₹10,000 max, ₹2,000 daily loss limit
+
+live_config = {
+    "enabled": False,           # OFF by default - turn ON manually
+    "max_capital": 10000,       # ₹10,000 max
+    "lots": 1,                  # 1 lot only
+    "qty": 15,                  # 15 qty per lot
+    "max_daily_loss": 2000,     # stop after ₹2,000 loss
+    "product": "I",             # Intraday
+    "order_type": "MARKET",     # Market order for fast execution
+}
+
+live_state = {
+    "open_order_id": None,
+    "sl_order_id": None,
+    "open_trade": None,
+    "daily_pnl": 0,
+    "daily_trades": 0,
+    "orders": [],
+    "log": []
+}
+
+def live_log(msg):
+    """Log live trading activity."""
+    from datetime import timezone, timedelta
+    ist = timezone(timedelta(hours=5, minutes=30))
+    t = datetime.now(timezone.utc).astimezone(ist).strftime("%H:%M:%S")
+    entry = f"[{t}] {msg}"
+    live_state["log"].insert(0, entry)
+    live_state["log"] = live_state["log"][:50]
+    print(f"[LIVE] {entry}")
+
+def get_option_instrument_key(strike, otype, expiry=None):
+    """Get Upstox instrument key for BN option."""
+    try:
+        from datetime import date, timedelta
+        if not expiry:
+            d = date.today()
+            days = (3 - d.weekday()) % 7
+            if days == 0: days = 7
+            expiry = (d + timedelta(days=days))
+        exp_str = expiry.strftime("%y%b%d").upper()
+        # BN weekly option format: NSE_FO|BANKNIFTY{exp}{strike}{otype}
+        # e.g. NSE_FO|BANKNIFTY25MAY5400CE
+        exp_fmt = expiry.strftime("%d%b%y").upper()  # 14MAY25
+        symbol = f"BANKNIFTY{exp_fmt}{int(strike)}{otype}"
+        # Search in option chain for exact key
+        oc = cache.get("option_chain", [])
+        ltp_key = "ce_ltp" if otype == "CE" else "pe_ltp"
+        key_field = "ce_key" if otype == "CE" else "pe_key"
+        for item in oc:
+            if item.get("strike") == strike:
+                key = item.get(key_field)
+                if key:
+                    live_log(f"Found instrument key: {key}")
+                    return key
+        live_log(f"Instrument key not found for {strike}{otype}")
+        return None
+    except Exception as e:
+        live_log(f"Error getting instrument key: {e}")
+        return None
+
+def place_live_order(signal_data, spot):
+    """Place a real order on Upstox."""
+    if not live_config["enabled"]:
+        return {"ok": False, "error": "Live trading disabled"}
+
+    if not state.get("access_token"):
+        return {"ok": False, "error": "Not authenticated"}
+
+    # Check daily loss limit
+    if live_state["daily_pnl"] <= -live_config["max_daily_loss"]:
+        live_log(f"Daily loss limit hit: ₹{live_state['daily_pnl']}")
+        return {"ok": False, "error": "Daily loss limit reached"}
+
+    # Check if already in trade
+    if live_state["open_trade"]:
+        return {"ok": False, "error": "Already in a trade"}
+
+    otype = signal_data.get("otype", "CE")
+    strike = signal_data.get("strike", round(spot/100)*100)
+
+    # Get instrument key from option chain
+    instrument_key = get_option_instrument_key(strike, otype)
+    if not instrument_key:
+        live_log(f"Cannot find instrument key for {strike}{otype}")
+        return {"ok": False, "error": f"Instrument key not found for {strike}{otype}"}
+
+    qty = live_config["qty"] * live_config["lots"]
+
+    # Place BUY order
+    order_payload = {
+        "quantity": qty,
+        "product": live_config["product"],
+        "validity": "DAY",
+        "price": 0,
+        "tag": "BN_TERMINAL",
+        "instrument_token": instrument_key,
+        "order_type": "MARKET",
+        "transaction_type": "BUY",
+        "disclosed_quantity": 0,
+        "trigger_price": 0,
+        "is_amo": False
+    }
+
+    try:
+        r = requests.post(
+            "https://api.upstox.com/v2/order/place",
+            headers={**hdr(), "Content-Type": "application/json"},
+            json=order_payload,
+            timeout=10
+        )
+        resp = r.json()
+        live_log(f"Order response: {resp}")
+
+        if r.status_code == 200 and resp.get("status") == "success":
+            order_id = resp.get("data", {}).get("order_id")
+            live_state["open_order_id"] = order_id
+            live_state["open_trade"] = {
+                "order_id": order_id,
+                "otype": otype,
+                "strike": strike,
+                "instrument_key": instrument_key,
+                "qty": qty,
+                "entry_spot": spot,
+                "sl": signal_data.get("sl", spot),
+                "t1": signal_data.get("t1", 0),
+                "time": datetime.now().strftime("%d %b %H:%M"),
+                "status": "OPEN"
+            }
+            live_state["daily_trades"] += 1
+            live_log(f"✅ Order placed: {otype} {strike} x{qty} | ID: {order_id}")
+            return {"ok": True, "order_id": order_id}
+        else:
+            err = resp.get("errors", [{}])
+            err_msg = err[0].get("message", str(resp)) if err else str(resp)
+            live_log(f"❌ Order failed: {err_msg}")
+            return {"ok": False, "error": err_msg}
+
+    except Exception as e:
+        live_log(f"❌ Order exception: {e}")
+        return {"ok": False, "error": str(e)}
+
+def exit_live_trade(reason, spot):
+    """Exit the open live trade."""
+    t = live_state["open_trade"]
+    if not t:
+        return {"ok": False, "error": "No open trade"}
+
+    instrument_key = t["instrument_key"]
+    qty = t["qty"]
+
+    order_payload = {
+        "quantity": qty,
+        "product": live_config["product"],
+        "validity": "DAY",
+        "price": 0,
+        "tag": "BN_TERMINAL_EXIT",
+        "instrument_token": instrument_key,
+        "order_type": "MARKET",
+        "transaction_type": "SELL",
+        "disclosed_quantity": 0,
+        "trigger_price": 0,
+        "is_amo": False
+    }
+
+    try:
+        r = requests.post(
+            "https://api.upstox.com/v2/order/place",
+            headers={**hdr(), "Content-Type": "application/json"},
+            json=order_payload,
+            timeout=10
+        )
+        resp = r.json()
+
+        if r.status_code == 200 and resp.get("status") == "success":
+            exit_order_id = resp.get("data", {}).get("order_id")
+            # Get real exit premium
+            exit_prem = get_real_premium(t["strike"], t["otype"]) or 0
+            entry_prem = t.get("entry_premium", 0)
+            pnl = round((exit_prem - entry_prem) * qty, 2) if entry_prem else 0
+            live_state["daily_pnl"] += pnl
+            t.update({"status": "CLOSED", "exit_spot": spot, "reason": reason,
+                      "exit_premium": exit_prem, "pnl": pnl,
+                      "exit_time": datetime.now().strftime("%d %b %H:%M")})
+            live_state["orders"].insert(0, dict(t))
+            live_state["open_trade"] = None
+            live_log(f"✅ Exit order placed: {reason} | P&L ₹{pnl:+,.0f}")
+            return {"ok": True, "pnl": pnl}
+        else:
+            err = resp.get("errors", [{}])
+            err_msg = err[0].get("message", str(resp)) if err else str(resp)
+            live_log(f"❌ Exit failed: {err_msg}")
+            return {"ok": False, "error": err_msg}
+
+    except Exception as e:
+        live_log(f"❌ Exit exception: {e}")
+        return {"ok": False, "error": str(e)}
+
+def get_live_positions():
+    """Fetch real positions from Upstox."""
+    try:
+        r = requests.get("https://api.upstox.com/v2/portfolio/short-term-positions",
+                        headers=hdr(), timeout=10)
+        if r.status_code == 200:
+            return r.json().get("data", [])
+    except Exception as e:
+        live_log(f"Positions error: {e}")
+    return []
+
+
 def get_learning_summary():
     """Get summary of learning for API."""
     if not learning["days"]:
@@ -740,6 +954,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div class="tab"     onclick="goTab(2)">⛓ LEVELS</div>
   <div class="tab"     onclick="goTab(3)">🤖 ARIA</div>
   <div class="tab"     onclick="goTab(4)">📋 TRADES</div>
+  <div class="tab"     onclick="goTab(5)">🔴 LIVE</div>
 </div>
 
 <!-- PAGES -->
@@ -873,6 +1088,59 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
     </div>
   </div>
 
+
+  <!-- PAGE 5: LIVE TRADING -->
+  <div class="page" id="page-5">
+
+    <!-- Status Card -->
+    <div id="live-status-card" class="card">
+      <div class="card-hd">🔴 LIVE TRADING<span id="live-status-badge" style="font-weight:900;color:var(--red)">DISABLED</span></div>
+      <div style="padding:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px">
+          <div class="mi"><div class="mi-l">DAILY P&L</div><div id="live-daily-pnl" class="mi-v" style="font-size:18px">₹0</div></div>
+          <div class="mi"><div class="mi-l">TRADES TODAY</div><div id="live-daily-trades" class="mi-v" style="font-size:18px">0</div></div>
+          <div class="mi"><div class="mi-l">CAPITAL LIMIT</div><div class="mi-v" style="font-size:18px;color:var(--yellow)">₹10,000</div></div>
+        </div>
+        <!-- Enable/Disable buttons -->
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button id="live-enable-btn" onclick="enableLive()" style="flex:1;padding:12px;background:var(--green);color:#000;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;letter-spacing:0.08em">▶ ENABLE LIVE TRADING</button>
+          <button id="live-disable-btn" onclick="disableLive()" style="flex:1;padding:12px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;display:none">⏹ DISABLE</button>
+        </div>
+        <!-- Warning -->
+        <div style="background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.3);border-radius:4px;padding:10px 12px;font-size:9px;color:var(--yellow);line-height:1.8">
+          ⚠ REAL MONEY — 1 lot (15 qty) only · Stop at ₹2,000 daily loss · Market orders · Intraday only
+        </div>
+      </div>
+    </div>
+
+    <!-- Open Position -->
+    <div class="card">
+      <div class="card-hd">OPEN POSITION</div>
+      <div id="live-open-body" style="padding:14px;text-align:center;color:var(--muted);font-size:10px">No open position</div>
+    </div>
+
+    <!-- Manual Exit -->
+    <button onclick="exitLive()" style="width:100%;padding:12px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;margin-bottom:8px">EXIT LIVE TRADE NOW</button>
+
+    <!-- Trade History -->
+    <div class="card">
+      <div class="card-hd">LIVE TRADE HISTORY</div>
+      <div id="live-history" style="max-height:200px;overflow-y:auto">
+        <div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No live trades yet</div>
+      </div>
+    </div>
+
+    <!-- Activity Log -->
+    <div class="card">
+      <div class="card-hd">ACTIVITY LOG</div>
+      <div id="live-log" style="max-height:150px;overflow-y:auto;padding:8px 12px;font-size:9px;font-family:monospace;color:var(--teal);line-height:1.8">
+        Waiting...
+      </div>
+    </div>
+
+  </div>
+
+
 </div>
 
 <!-- LOG BAR -->
@@ -967,6 +1235,7 @@ function goTab(i) {
   document.querySelectorAll('.page').forEach((p,j) => p.classList.toggle('on', i===j));
   if (i === 1) setTimeout(() => { if (!lwC) initChart(); else loadChart(1); }, 100);
   if (i === 4) fetchTrades();
+  if (i === 5) fetchLiveStatus();
 }
 
 // ═══════════════ PRICE FETCH ═══════════════
@@ -1271,6 +1540,7 @@ function renderAll() {
     const result=TradeBrain.tick(S.spot,S.candles,ema(cl2,9),ema(cl2,21),vwapCalc(S.candles),rsi(cl2,14));
     if (result && result.action==='EXIT') {
       fetch('/api/trades/close_reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:result.reason,spot:S.spot})}).then(()=>fetchTrades());
+      if(liveEnabled){ fetch('/api/live/exit_reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:result.reason,spot:S.spot})}).then(()=>fetchLiveStatus()); }
       TradeBrain.reset();
       toast('Trade exited: '+result.reason);
       // If RSI extreme exit - immediately look for reversal trade
@@ -1657,6 +1927,140 @@ setInterval(fetchFromServer, 5000);
 setInterval(fetchTrades, 10000);
 setTimeout(()=>location.reload(), 4*60*60*1000);
 fetchTrades();
+
+// ═══════════════ LIVE TRADING JS ═══════════════
+let liveEnabled = false;
+let lastLiveSignal = null;
+
+async function fetchLiveStatus() {
+  try {
+    const res = await fetch('/api/live/status');
+    const d = await res.json();
+    renderLiveStatus(d);
+  } catch(e) {}
+}
+
+function renderLiveStatus(d) {
+  if (!d) return;
+  liveEnabled = d.enabled;
+
+  // Status badge
+  const badge = document.getElementById('live-status-badge');
+  const enableBtn = document.getElementById('live-enable-btn');
+  const disableBtn = document.getElementById('live-disable-btn');
+  const card = document.getElementById('live-status-card');
+
+  if (badge) {
+    badge.textContent = d.enabled ? ' ACTIVE' : ' DISABLED';
+    badge.style.color = d.enabled ? 'var(--green)' : 'var(--red)';
+  }
+  if (card) card.style.borderColor = d.enabled ? 'var(--green)' : 'var(--bdr)';
+  if (enableBtn) enableBtn.style.display = d.enabled ? 'none' : 'block';
+  if (disableBtn) disableBtn.style.display = d.enabled ? 'block' : 'none';
+
+  // Daily stats
+  const pnlEl = document.getElementById('live-daily-pnl');
+  const tradesEl = document.getElementById('live-daily-trades');
+  if (pnlEl) { pnlEl.textContent = (d.daily_pnl>=0?'+':'') + '₹' + Math.round(Math.abs(d.daily_pnl)).toLocaleString('en-IN'); pnlEl.style.color = fc(d.daily_pnl); }
+  if (tradesEl) tradesEl.textContent = d.daily_trades || 0;
+
+  // Open position
+  const openBody = document.getElementById('live-open-body');
+  if (openBody) {
+    if (d.open_trade) {
+      const t = d.open_trade;
+      const isBuy = t.otype === 'CE';
+      const col = isBuy ? 'var(--green)' : 'var(--red)';
+      openBody.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--bdr)">'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">SIGNAL</div><div style="font-family:var(--cond);font-size:20px;font-weight:900;color:'+col+'">'+(isBuy?'BUY CALL':'BUY PUT')+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">STRIKE</div><div style="font-family:var(--cond);font-size:20px;font-weight:900">'+t.strike.toLocaleString('en-IN')+' '+t.otype+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">ORDER ID</div><div style="font-size:10px;color:var(--teal);font-weight:700">'+(t.order_id||'—')+'</div></div>'
+        + '<div style="background:var(--bg2);padding:10px 12px"><div class="mi-l">QTY</div><div style="font-family:var(--cond);font-size:18px;font-weight:900">'+t.qty+'</div></div>'
+        + '</div>';
+    } else {
+      openBody.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position</div>';
+    }
+  }
+
+  // Trade history
+  const hist = document.getElementById('live-history');
+  if (hist) {
+    if (!d.orders || !d.orders.length) {
+      hist.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No live trades yet</div>';
+    } else {
+      hist.innerHTML = d.orders.map(function(t) {
+        const col = (t.pnl||0) >= 0 ? 'var(--green)' : 'var(--red)';
+        const isBuy = t.otype === 'CE';
+        return '<div style="padding:8px 12px;border-bottom:1px solid var(--bdr)">'
+          + '<div style="display:flex;justify-content:space-between">'
+          + '<span style="font-family:var(--cond);font-weight:900;color:'+(isBuy?'var(--green)':'var(--red)')+'">'+t.strike+' '+t.otype+'</span>'
+          + '<span style="font-family:var(--cond);font-weight:900;color:'+col+'">'+(t.pnl>=0?'+':'')+'₹'+Math.round(Math.abs(t.pnl||0)).toLocaleString('en-IN')+'</span>'
+          + '</div>'
+          + '<div style="font-size:8px;color:var(--muted)">'+(t.time||'')+'→'+(t.exit_time||'—')+' · '+(t.reason||'')+'</div>'
+          + '</div>';
+      }).join('');
+    }
+  }
+
+  // Log
+  const logEl = document.getElementById('live-log');
+  if (logEl && d.log && d.log.length) {
+    logEl.innerHTML = d.log.map(l => '<div>'+l+'</div>').join('');
+  }
+}
+
+async function enableLive() {
+  if (!confirm('⚠ REAL MONEY WARNING\n\nThis will place REAL orders on Upstox with your actual money.\n\nSettings:\n- 1 lot (15 qty) per trade\n- ₹10,000 max capital\n- Stop at ₹2,000 daily loss\n\nAre you sure you want to enable live trading?')) return;
+  const res = await fetch('/api/live/enable', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({lots: 1, max_capital: 10000, max_daily_loss: 2000})
+  });
+  const d = await res.json();
+  if (d.ok) { toast('✅ Live trading ENABLED — 1 lot, ₹10K limit'); fetchLiveStatus(); }
+  else toast('Error: ' + d.error);
+}
+
+async function disableLive() {
+  if (!confirm('Disable live trading?')) return;
+  await fetch('/api/live/disable', {method: 'POST'});
+  toast('Live trading disabled');
+  fetchLiveStatus();
+}
+
+async function exitLive() {
+  if (!confirm('Exit live trade NOW at market price?')) return;
+  const res = await fetch('/api/live/exit', {method: 'POST'});
+  const d = await res.json();
+  if (d.ok) toast('Exit order placed | P&L: ' + (d.pnl>=0?'+':'') + '₹' + Math.round(Math.abs(d.pnl||0)));
+  else toast('Exit error: ' + d.error);
+  fetchLiveStatus();
+}
+
+// Connect live trading to signal engine
+function checkLiveTrade(sig) {
+  if (!liveEnabled) return;
+  if (!sig || sig.signal === 'WAIT') return;
+  const now3min = Math.floor(Date.now() / 180000);
+  const key = 'LIVE_' + sig.signal + '_' + sig.strike + '_' + now3min;
+  if (key === lastLiveSignal) return;
+  const conf = sig.conf || 65;
+  if (conf >= 60) {
+    lastLiveSignal = key;
+    fetch('/api/live/signal', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({signal: sig.signal==='BUY'?'BUY':'SELL', otype: sig.otype, strike: sig.strike, sl: sig.sl, t1: sig.t1, t2: sig.t2, conf})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.ok) toast('🔴 LIVE ORDER PLACED: ' + (sig.signal==='BUY'?'BUY CALL':'BUY PUT') + ' ' + sig.strike.toLocaleString('en-IN'));
+      else toast('Live order failed: ' + d.error);
+      fetchLiveStatus();
+    });
+  }
+}
+
+// Poll live status every 5 seconds when on live tab
+setInterval(fetchLiveStatus, 5000);
+
+
 </script>
 </body>
 </html>
@@ -2174,6 +2578,67 @@ def candles_api():
 
 @app.route("/ping")
 def ping(): return "pong"
+
+# ═══ LIVE TRADING ROUTES ═══
+
+@app.route("/api/live/status")
+def live_status():
+    """Get live trading status."""
+    pos = get_live_positions() if live_config["enabled"] else []
+    return jsonify({
+        "enabled": live_config["enabled"],
+        "config": live_config,
+        "open_trade": live_state["open_trade"],
+        "daily_pnl": live_state["daily_pnl"],
+        "daily_trades": live_state["daily_trades"],
+        "orders": live_state["orders"][:20],
+        "log": live_state["log"][:20],
+        "positions": pos
+    })
+
+@app.route("/api/live/enable", methods=["POST"])
+def live_enable():
+    """Enable live trading."""
+    data = request.json or {}
+    live_config["enabled"] = True
+    live_config["lots"] = data.get("lots", 1)
+    live_config["max_capital"] = data.get("max_capital", 10000)
+    live_config["max_daily_loss"] = data.get("max_daily_loss", 2000)
+    live_log(f"Live trading ENABLED | {live_config['lots']} lot | Max ₹{live_config['max_capital']} | SL ₹{live_config['max_daily_loss']}")
+    return jsonify({"ok": True, "config": live_config})
+
+@app.route("/api/live/disable", methods=["POST"])
+def live_disable():
+    """Disable live trading."""
+    live_config["enabled"] = False
+    live_log("Live trading DISABLED")
+    return jsonify({"ok": True})
+
+@app.route("/api/live/signal", methods=["POST"])
+def live_signal():
+    """Called when signal fires — place real order."""
+    if not live_config["enabled"]:
+        return jsonify({"ok": False, "error": "Live trading disabled"})
+    data = request.json or {}
+    spot = cache.get("spot", 0)
+    result = place_live_order(data, spot)
+    return jsonify(result)
+
+@app.route("/api/live/exit", methods=["POST"])
+def live_exit():
+    """Manually exit live trade."""
+    spot = cache.get("spot", 0)
+    result = exit_live_trade("MANUAL EXIT", spot)
+    return jsonify(result)
+
+@app.route("/api/live/exit_reason", methods=["POST"])
+def live_exit_reason():
+    """Exit live trade with reason from TradeBrain."""
+    data = request.json or {}
+    spot = data.get("spot", cache.get("spot", 0))
+    reason = data.get("reason", "BRAIN EXIT")
+    result = exit_live_trade(reason, spot)
+    return jsonify(result)
 
 @app.route("/api/learning")
 def learning_api():
