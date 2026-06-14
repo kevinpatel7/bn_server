@@ -822,7 +822,20 @@ TERMINAL_HTML = """
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BN Terminal</title>
-<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js">
+// ─── CUSTOM CONFIRM (replaces browser confirm() which is blocked in iframes) ───
+function bConfirm(msg, onOk) {
+  const ov = document.getElementById('conf-overlay');
+  document.getElementById('conf-msg').textContent = msg;
+  ov.style.display = 'flex';
+  const ok = document.getElementById('conf-ok');
+  const cancel = document.getElementById('conf-cancel');
+  function cleanup() { ov.style.display = 'none'; ok.onclick = null; cancel.onclick = null; }
+  ok.onclick = function() { cleanup(); onOk(); };
+  cancel.onclick = function() { cleanup(); };
+}
+
+</script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -1859,13 +1872,15 @@ function renderLearning(d) {
 }
 
 async function manualClose() {
-  if (!confirm('Close open trade now?')) return;
+  bConfirm('Close open trade now?', function() { doCloseTrade(); }); }
+function doCloseTrade() {
   await fetch('/api/trades/close',{method:'POST'});
   fetchTrades();
 }
 
 async function resetAccount() {
-  if (!confirm('Reset all trades and start fresh with ₹1,00,000?')) return;
+  bConfirm('Reset all trades and start fresh with ₹1,00,000?', function() { doResetTrades(); }); }
+function doResetTrades() {
   await fetch('/api/trades/reset',{method:'POST'});
   fetchTrades();
 }
@@ -1983,19 +1998,22 @@ function renderLiveStatus(d) {
 }
 
 function enableLive() {
-  if (!confirm('REAL MONEY WARNING\nPlaces REAL orders on Upstox.\n1 lot | Max Rs.10000 | Stop Rs.2000\nConfirm?')) return;
+  bConfirm('REAL MONEY WARNING\nPlaces REAL orders on Upstox.\n1 lot | Max Rs.10000 | Stop Rs.2000\nConfirm?', function() { doEnableLive(); }); }
+function doEnableLive() {
   fetch('/api/live/enable', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lots:1,max_capital:10000,max_daily_loss:2000})})
     .then(function(r){return r.json();})
     .then(function(d){ if(d.ok){toast('Live trading ENABLED');fetchLiveStatus();}else{toast('Error: '+d.error);} });
 }
 
 function disableLive() {
-  if (!confirm('Disable live trading?')) return;
+  bConfirm('Disable live trading?', function() { doDisableLive(); }); }
+function doDisableLive() {
   fetch('/api/live/disable',{method:'POST'}).then(function(){toast('Live trading disabled');fetchLiveStatus();});
 }
 
 function exitLive() {
-  if (!confirm('Exit live trade at market price?')) return;
+  bConfirm('Exit live trade at market price?', function() { doExitLive(); }); }
+function doExitLive() {
   fetch('/api/live/exit',{method:'POST'}).then(function(r){return r.json();}).then(function(d){toast(d.ok?'Exit placed':'Exit error: '+d.error);fetchLiveStatus();});
 }
 
@@ -2016,6 +2034,18 @@ function checkLiveTrade(sig) {
 setInterval(function(){ try{fetchLiveStatus();}catch(e){} }, 10000);
 
 </script>
+
+<!-- CUSTOM CONFIRM MODAL -->
+<div id="conf-overlay" style="display:none;position:fixed;inset:0;background:rgba(6,10,16,0.92);z-index:1000;align-items:center;justify-content:center">
+  <div style="background:var(--bg2);border:1px solid var(--bdr);border-radius:6px;padding:24px;max-width:320px;width:90%;text-align:center">
+    <div id="conf-msg" style="font-size:12px;color:var(--white);line-height:1.8;margin-bottom:20px;white-space:pre-line"></div>
+    <div style="display:flex;gap:10px;justify-content:center">
+      <button id="conf-cancel" style="flex:1;padding:10px;background:var(--dim);color:var(--white);border:1px solid var(--bdr);font-family:var(--cond);font-size:13px;font-weight:700;cursor:pointer;border-radius:4px">CANCEL</button>
+      <button id="conf-ok"     style="flex:1;padding:10px;background:var(--orange);color:#000;border:none;font-family:var(--cond);font-size:13px;font-weight:700;cursor:pointer;border-radius:4px">CONFIRM</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>
 
