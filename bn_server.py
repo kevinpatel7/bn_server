@@ -954,6 +954,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div class="tab"     onclick="goTab(2)">⛓ LEVELS</div>
   <div class="tab"     onclick="goTab(3)">🤖 ARIA</div>
   <div class="tab"     onclick="goTab(4)">📋 TRADES</div>
+  <div class="tab"     onclick="goTab(5)">LIVE</div>
 </div>
 
 <!-- PAGES -->
@@ -1089,6 +1090,38 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
 
 
 
+  <!-- PAGE 5: LIVE TRADING -->
+  <div class="page" id="page-5">
+    <div class="card">
+      <div class="card-hd">LIVE TRADING STATUS<span id="live-badge" style="font-weight:900;color:var(--red)"> DISABLED</span></div>
+      <div style="padding:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px">
+          <div class="mi"><div class="mi-l">DAILY P&L</div><div id="live-pnl" class="mi-v" style="font-size:16px">+Rs.0</div></div>
+          <div class="mi"><div class="mi-l">TRADES</div><div id="live-trades" class="mi-v" style="font-size:16px">0</div></div>
+          <div class="mi"><div class="mi-l">LIMIT</div><div class="mi-v" style="font-size:16px;color:var(--yellow)">Rs.10,000</div></div>
+        </div>
+        <button id="live-on-btn" onclick="enableLive()" style="width:100%;padding:12px;background:var(--green);color:#000;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;margin-bottom:6px">ENABLE LIVE TRADING</button>
+        <button id="live-off-btn" onclick="disableLive()" style="width:100%;padding:12px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;display:none;margin-bottom:6px">DISABLE LIVE TRADING</button>
+        <div style="padding:8px 12px;background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.3);border-radius:4px;font-size:9px;color:var(--yellow);line-height:1.8">
+          REAL MONEY - 1 lot only - Stop at Rs.2000 daily loss - Market orders - Intraday only
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-hd">OPEN POSITION</div>
+      <div id="live-open" style="padding:14px;text-align:center;color:var(--muted);font-size:10px">No open position</div>
+    </div>
+    <button onclick="exitLive()" style="width:100%;padding:10px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:13px;font-weight:900;cursor:pointer;border-radius:4px;margin-bottom:8px">EXIT LIVE TRADE NOW</button>
+    <div class="card">
+      <div class="card-hd">LIVE TRADE HISTORY</div>
+      <div id="live-hist" style="max-height:200px;overflow-y:auto;padding:8px 0"><div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No live trades yet</div></div>
+    </div>
+    <div class="card">
+      <div class="card-hd">ACTIVITY LOG</div>
+      <div id="live-log" style="max-height:120px;overflow-y:auto;padding:8px 12px;font-size:9px;color:var(--teal);line-height:1.8">Waiting...</div>
+    </div>
+  </div>
+
 </div>
 
 <!-- LOG BAR -->
@@ -1184,6 +1217,7 @@ function goTab(i) {
     document.querySelectorAll('.page').forEach((p,j) => p.classList.toggle('on', i===j));
     if (i === 1) setTimeout(function(){ try{ if (!lwC) initChart(); else loadChart(1); }catch(e){} }, 100);
     if (i === 4) try{ fetchTrades(); }catch(e){}
+    if (i === 5) try{ fetchLiveStatus(); }catch(e){}
     if (i === 5) try{ fetchLiveStatus(); }catch(e){}
   } catch(e) {
     console.error('goTab error:', e);
@@ -1885,6 +1919,73 @@ setTimeout(()=>location.reload(), 4*60*60*1000);
 fetchTrades();
 
 
+
+// LIVE TRADING MODULE
+var liveOn = false;
+var lastLiveSig = null;
+
+function fetchLiveStatus() {
+  fetch('/api/live/status', {cache:'no-store'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){ if (d) updateLiveUI(d); })
+    .catch(function(e){});
+}
+
+function updateLiveUI(d) {
+  liveOn = d.enabled || false;
+  var badge = document.getElementById('live-badge');
+  var onBtn = document.getElementById('live-on-btn');
+  var offBtn = document.getElementById('live-off-btn');
+  if (badge) { badge.textContent = liveOn ? ' ACTIVE' : ' DISABLED'; badge.style.color = liveOn ? 'var(--green)' : 'var(--red)'; }
+  if (onBtn) onBtn.style.display = liveOn ? 'none' : 'block';
+  if (offBtn) offBtn.style.display = liveOn ? 'block' : 'none';
+  var p = d.daily_pnl || 0;
+  var pnlEl = document.getElementById('live-pnl');
+  if (pnlEl) { pnlEl.textContent = (p>=0?'+':'-')+'Rs.'+Math.round(Math.abs(p)).toLocaleString('en-IN'); pnlEl.style.color = p>=0?'var(--green)':'var(--red)'; }
+  var trEl = document.getElementById('live-trades');
+  if (trEl) trEl.textContent = d.daily_trades || 0;
+  var ob = document.getElementById('live-open');
+  if (ob) { ob.innerHTML = d.open_trade ? '<div style="padding:10px;font-family:var(--cond);font-size:16px;font-weight:900;color:'+(d.open_trade.otype==='CE'?'var(--green)':'var(--red)')+'">'+d.open_trade.strike+' '+d.open_trade.otype+' Qty:'+d.open_trade.qty+'</div>' : '<div style="text-align:center;color:var(--muted);font-size:10px;padding:14px">No open position</div>'; }
+  var hist = document.getElementById('live-hist');
+  if (hist && d.orders && d.orders.length) {
+    hist.innerHTML = d.orders.slice(0,10).map(function(t){ var p=t.pnl||0; return '<div style="padding:8px 12px;border-bottom:1px solid var(--bdr)"><b style="color:'+(t.otype==='CE'?'var(--green)':'var(--red)')+'">'+t.strike+' '+t.otype+'</b><span style="float:right;color:'+(p>=0?'var(--green)':'var(--red)')+'">'+Math.round(p)+'</span><br><small style="color:var(--muted)">'+(t.reason||'')+'</small></div>'; }).join('');
+  }
+  var logEl = document.getElementById('live-log');
+  if (logEl && d.log && d.log.length) { logEl.innerHTML = d.log.map(function(l){ return '<div>'+l+'</div>'; }).join(''); }
+}
+
+function enableLive() {
+  if (!confirm('REAL MONEY WARNING. Places real orders on Upstox. 1 lot, Max Rs.10000, Stop Rs.2000. Confirm?')) return;
+  fetch('/api/live/enable', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({lots:1, max_capital:10000, max_daily_loss:2000})})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ toast(d.ok ? 'Live trading ENABLED' : 'Error: '+d.error); fetchLiveStatus(); });
+}
+
+function disableLive() {
+  if (!confirm('Disable live trading?')) return;
+  fetch('/api/live/disable', {method:'POST'}).then(function(){ toast('Live trading disabled'); fetchLiveStatus(); });
+}
+
+function exitLive() {
+  if (!confirm('Exit live trade at market price now?')) return;
+  fetch('/api/live/exit', {method:'POST'}).then(function(r){ return r.json(); }).then(function(d){ toast(d.ok ? 'Exit placed' : 'Error: '+d.error); fetchLiveStatus(); });
+}
+
+function checkLiveTrade(sig) {
+  if (!liveOn || !sig || sig.signal === 'WAIT') return;
+  var now3 = Math.floor(Date.now() / 180000);
+  var key = 'L_' + sig.signal + '_' + (sig.strike||0) + '_' + now3;
+  if (key === lastLiveSig) return;
+  var conf = sig.conf || 65;
+  if (conf >= 60) {
+    lastLiveSig = key;
+    fetch('/api/live/signal', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({signal:sig.signal==='BUY'?'BUY':'SELL', otype:sig.otype, strike:sig.strike, sl:sig.sl, t1:sig.t1, t2:sig.t2, conf:conf})})
+      .then(function(r){ return r.json(); })
+      .then(function(d){ toast(d.ok ? 'LIVE ORDER: '+(sig.signal==='BUY'?'BUY CALL':'BUY PUT')+' '+sig.strike : 'Live err: '+d.error); fetchLiveStatus(); });
+  }
+}
+
+setInterval(function(){ try{ fetchLiveStatus(); }catch(e){} }, 10000);
 </script>
 <div id="bn-modal" style="display:none;position:fixed;inset:0;background:rgba(6,10,16,0.94);z-index:2000;align-items:center;justify-content:center">
   <div style="background:#0D1117;border:1px solid #1E2D45;border-radius:6px;padding:28px 24px;max-width:300px;width:90%;text-align:center">
