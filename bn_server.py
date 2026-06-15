@@ -821,7 +821,7 @@ TERMINAL_HTML = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BN Terminal v9</title>
+<title>BN Terminal</title>
 <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -910,7 +910,7 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div id="logo">
     <div id="logo-dot"></div>
     <div>
-      <span style="display:block">BN TERMINAL v9</span>
+      <span style="display:block">BN TERMINAL</span>
       <span id="logo-sub">UPSTOX . LIVE</span>
     </div>
   </div>
@@ -954,7 +954,6 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
   <div class="tab"     onclick="goTab(2)">⛓ LEVELS</div>
   <div class="tab"     onclick="goTab(3)">🤖 ARIA</div>
   <div class="tab"     onclick="goTab(4)">📋 TRADES</div>
-  <div class="tab"     onclick="goTab(5)">LIVE</div>
 </div>
 
 <!-- PAGES -->
@@ -1088,57 +1087,6 @@ body{background:var(--bg);color:var(--white);font-family:'Inter',sans-serif;font
     </div>
   </div>
 
-
-  <!-- PAGE 5: LIVE TRADING -->
-  <div class="page" id="page-5">
-
-    <!-- Status Card -->
-    <div id="live-status-card" class="card">
-      <div class="card-hd">LIVE TRADING<span id="live-status-badge" style="font-weight:900;color:var(--red)">DISABLED</span></div>
-      <div style="padding:12px">
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:12px">
-          <div class="mi"><div class="mi-l">DAILY P&L</div><div id="live-daily-pnl" class="mi-v" style="font-size:18px">₹0</div></div>
-          <div class="mi"><div class="mi-l">TRADES TODAY</div><div id="live-daily-trades" class="mi-v" style="font-size:18px">0</div></div>
-          <div class="mi"><div class="mi-l">CAPITAL LIMIT</div><div class="mi-v" style="font-size:18px;color:var(--yellow)">₹10,000</div></div>
-        </div>
-        <!-- Enable/Disable buttons -->
-        <div style="display:flex;gap:8px;margin-bottom:12px">
-          <button id="live-enable-btn" onclick="enableLive()" style="flex:1;padding:12px;background:var(--green);color:#000;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;letter-spacing:0.08em">▶ ENABLE LIVE TRADING</button>
-          <button id="live-disable-btn" onclick="disableLive()" style="flex:1;padding:12px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;display:none">⏹ DISABLE</button>
-        </div>
-        <!-- Warning -->
-        <div style="background:rgba(255,214,0,0.08);border:1px solid rgba(255,214,0,0.3);border-radius:4px;padding:10px 12px;font-size:9px;color:var(--yellow);line-height:1.8">
-          REAL MONEY - 1 lot (15 qty) only | Stop at Rs.2,000 daily loss | Market orders | Intraday only
-        </div>
-      </div>
-    </div>
-
-    <!-- Open Position -->
-    <div class="card">
-      <div class="card-hd">OPEN POSITION</div>
-      <div id="live-open-body" style="padding:14px;text-align:center;color:var(--muted);font-size:10px">No open position</div>
-    </div>
-
-    <!-- Manual Exit -->
-    <button onclick="exitLive()" style="width:100%;padding:12px;background:var(--red);color:#fff;border:none;font-family:var(--cond);font-size:14px;font-weight:900;cursor:pointer;border-radius:4px;margin-bottom:8px">EXIT LIVE TRADE NOW</button>
-
-    <!-- Trade History -->
-    <div class="card">
-      <div class="card-hd">LIVE TRADE HISTORY</div>
-      <div id="live-history" style="max-height:200px;overflow-y:auto">
-        <div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No live trades yet</div>
-      </div>
-    </div>
-
-    <!-- Activity Log -->
-    <div class="card">
-      <div class="card-hd">ACTIVITY LOG</div>
-      <div id="live-log" style="max-height:150px;overflow-y:auto;padding:8px 12px;font-size:9px;font-family:monospace;color:var(--teal);line-height:1.8">
-        Waiting...
-      </div>
-    </div>
-
-  </div>
 
 
 </div>
@@ -1544,7 +1492,6 @@ function renderAll() {
     const result=TradeBrain.tick(S.spot,S.candles,ema(cl2,9),ema(cl2,21),vwapCalc(S.candles),rsi(cl2,14));
     if (result && result.action==='EXIT') {
       fetch('/api/trades/close_reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:result.reason,spot:S.spot})}).then(()=>fetchTrades());
-      if(liveEnabled){ fetch('/api/live/exit_reason',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason:result.reason,spot:S.spot})}).then(()=>fetchLiveStatus()); }
       TradeBrain.reset();
       toast('Trade exited: '+result.reason);
       // If RSI extreme exit - immediately look for reversal trade
@@ -1937,95 +1884,6 @@ setInterval(fetchTrades, 10000);
 setTimeout(()=>location.reload(), 4*60*60*1000);
 fetchTrades();
 
-
-// LIVE TRADING
-var liveEnabled = false;
-var lastLiveSignal = null;
-
-function fetchLiveStatus() {
-  fetch('/api/live/status', {cache:'no-store'})
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(d){ if(d) renderLiveStatus(d); })
-    .catch(function(){});
-}
-
-function renderLiveStatus(d) {
-  if (!d) return;
-  liveEnabled = d.enabled || false;
-  var badge = document.getElementById('live-status-badge');
-  var enableBtn = document.getElementById('live-enable-btn');
-  var disableBtn = document.getElementById('live-disable-btn');
-  if (badge) { badge.textContent = d.enabled ? ' ACTIVE' : ' DISABLED'; badge.style.color = d.enabled ? 'var(--green)' : 'var(--red)'; }
-  if (enableBtn) enableBtn.style.display = d.enabled ? 'none' : 'block';
-  if (disableBtn) disableBtn.style.display = d.enabled ? 'block' : 'none';
-  var pnlEl = document.getElementById('live-daily-pnl');
-  var trEl = document.getElementById('live-daily-trades');
-  if (pnlEl) { var p=d.daily_pnl||0; pnlEl.textContent=(p>=0?'+':'-')+'Rs.'+Math.round(Math.abs(p)).toLocaleString('en-IN'); pnlEl.style.color=p>=0?'var(--green)':'var(--red)'; }
-  if (trEl) trEl.textContent = d.daily_trades || 0;
-  var ob = document.getElementById('live-open-body');
-  if (ob) {
-    if (d.open_trade) {
-      var t = d.open_trade;
-      ob.innerHTML = '<div style="padding:12px;font-family:var(--cond);font-size:16px;font-weight:900;color:'+(t.otype==='CE'?'var(--green)':'var(--red)')+'">'+t.strike+' '+t.otype+' | Qty:'+t.qty+'</div>';
-    } else {
-      ob.innerHTML = '<div style="text-align:center;color:var(--muted);font-size:10px;padding:16px">No open position</div>';
-    }
-  }
-  var hist = document.getElementById('live-history');
-  if (hist && d.orders && d.orders.length) {
-    hist.innerHTML = d.orders.slice(0,10).map(function(t){
-      var p=t.pnl||0; var col=p>=0?'var(--green)':'var(--red)';
-      return '<div style="padding:8px 12px;border-bottom:1px solid var(--bdr)"><span style="font-family:var(--cond);font-weight:900">'+t.strike+' '+t.otype+'</span> <span style="color:'+col+';float:right">'+(p>=0?'+':'')+Math.round(p)+'</span><br><span style="font-size:8px;color:var(--muted)">'+(t.reason||'')+'</span></div>';
-    }).join('');
-  }
-  var logEl = document.getElementById('live-log');
-  if (logEl && d.log && d.log.length) { logEl.innerHTML = d.log.map(function(l){return '<div>'+l+'</div>';}).join(''); }
-}
-
-function enableLive() {
-  showModal('REAL MONEY WARNING - Places REAL orders on Upstox.\n1 lot | Max Rs.10000 | Stop Rs.2000\nConfirm to enable?', function() {
-    fetch('/api/live/enable', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lots:1,max_capital:10000,max_daily_loss:2000})})
-      .then(function(r){return r.json();})
-      .then(function(d){ if(d.ok){toast('Live trading ENABLED');fetchLiveStatus();}else{toast('Error: '+d.error);} });
-  });
-}
-
-function disableLive() {
-  showModal('Disable live trading?', function() {
-    fetch('/api/live/disable',{method:'POST'}).then(function(){toast('Live trading disabled');fetchLiveStatus();});
-  });
-}
-
-function exitLive() {
-  showModal('Exit live trade at market price?', function() {
-    fetch('/api/live/exit',{method:'POST'}).then(function(r){return r.json();}).then(function(d){toast(d.ok?'Exit placed':'Exit error: '+d.error);fetchLiveStatus();});
-  });
-}
-
-function checkLiveTrade(sig) {
-  if (!liveEnabled || !sig || sig.signal==='WAIT') return;
-  var now3 = Math.floor(Date.now()/180000);
-  var key = 'LIVE_'+sig.signal+'_'+sig.strike+'_'+now3;
-  if (key===lastLiveSignal) return;
-  var conf = sig.conf||65;
-  if (conf>=60) {
-    lastLiveSignal = key;
-    fetch('/api/live/signal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({signal:sig.signal==='BUY'?'BUY':'SELL',otype:sig.otype,strike:sig.strike,sl:sig.sl,t1:sig.t1,t2:sig.t2,conf:conf})})
-      .then(function(r){return r.json();})
-      .then(function(d){toast(d.ok?'LIVE ORDER: '+(sig.signal==='BUY'?'BUY CALL':'BUY PUT')+' '+sig.strike:'Live failed: '+d.error);fetchLiveStatus();});
-  }
-}
-
-setInterval(function(){ try{fetchLiveStatus();}catch(e){} }, 10000);
-
-// -- MODAL: replaces confirm() which is blocked in Railway sandbox --
-function showModal(msg, onOk) {
-  var el = document.getElementById('bn-modal');
-  document.getElementById('bn-modal-msg').textContent = msg;
-  el.style.display = 'flex';
-  document.getElementById('bn-modal-ok').onclick = function() { el.style.display='none'; onOk(); };
-  document.getElementById('bn-modal-cancel').onclick = function() { el.style.display='none'; };
-}
 
 </script>
 <div id="bn-modal" style="display:none;position:fixed;inset:0;background:rgba(6,10,16,0.94);z-index:2000;align-items:center;justify-content:center">
