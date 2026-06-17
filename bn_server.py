@@ -1519,6 +1519,7 @@ function renderAll() {
   renderInds(sig.meta||{});
   renderMinis();
   checkPaperTrade(sig);
+  try{ checkLiveTrade(sig); }catch(e){}
   updateChartTick(S.spot, S.high, S.low);
   // TradeBrain
   if (TradeBrain.active && S.candles.length>=3) {
