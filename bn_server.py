@@ -2089,14 +2089,18 @@ def fetch_option_chain(spot):
         chain, tot_ce, tot_pe, pain = [], 0, 0, {}
         for item in data:
             s = item.get("strike_price", 0)
-            ce = item.get("call_options", {}).get("market_data", {})
-            pe = item.get("put_options",  {}).get("market_data", {})
+            ce_obj = item.get("call_options", {})
+            pe_obj = item.get("put_options",  {})
+            ce = ce_obj.get("market_data", {})
+            pe = pe_obj.get("market_data", {})
+            ce_key = ce_obj.get("instrument_key", "")
+            pe_key = pe_obj.get("instrument_key", "")
             co, po = ce.get("oi", 0) or 0, pe.get("oi", 0) or 0
             tot_ce += co; tot_pe += po
             chain.append({"strike": s, "ce_ltp": round(ce.get("ltp",0) or 0,1),
-                "ce_oi": co, "ce_iv": round(ce.get("iv",0) or 0,1),
+                "ce_oi": co, "ce_iv": round(ce.get("iv",0) or 0,1), "ce_key": ce_key,
                 "pe_ltp": round(pe.get("ltp",0) or 0,1),
-                "pe_oi": po, "pe_iv": round(pe.get("iv",0) or 0,1),
+                "pe_oi": po, "pe_iv": round(pe.get("iv",0) or 0,1), "pe_key": pe_key,
                 "is_atm": abs(s-spot)<50})
             pain[s] = sum(max(0,ss.get("strike_price",0)-s)*(ss.get("call_options",{}).get("market_data",{}).get("oi",0) or 0)
                         + max(0,s-ss.get("strike_price",0))*(ss.get("put_options",{}).get("market_data",{}).get("oi",0) or 0)
