@@ -2078,8 +2078,7 @@ def fetch_quote(keys):
 def fetch_option_chain(spot):
     try:
         d = date.today()
-        days = (3 - d.weekday()) % 7
-        if days == 0: days = 7
+        days = (3 - d.weekday()) % 7  # 0 if today is Thursday (use today's expiry)
         expiry = (d + timedelta(days=days)).strftime("%Y-%m-%d")
         url = f"https://api.upstox.com/v2/option/chain?instrument_key={requests.utils.quote(BN_KEY)}&expiry_date={expiry}"
         r = requests.get(url, headers=hdr(), timeout=10)
@@ -2532,17 +2531,29 @@ def debug_optionchain():
 @app.route("/api/debug/rawchain")
 def debug_rawchain():
     """Debug: fetch raw Upstox option chain API response directly."""
+    results = {}
     try:
         d = date.today()
         days = (3 - d.weekday()) % 7
-        if days == 0: days = 7
-        expiry = (d + timedelta(days=days)).strftime("%Y-%m-%d")
-        url = f"https://api.upstox.com/v2/option/chain?instrument_key={requests.utils.quote(BN_KEY)}&expiry_date={expiry}"
-        r = requests.get(url, headers=hdr(), timeout=10)
-        data = r.json().get("data", [])
-        return jsonify({"status": r.status_code, "first_item": data[0] if data else None})
+        expiry1 = (d + timedelta(days=days)).strftime("%Y-%m-%d")
+        url1 = f"https://api.upstox.com/v2/option/chain?instrument_key={requests.utils.quote(BN_KEY)}&expiry_date={expiry1}"
+        r1 = requests.get(url1, headers=hdr(), timeout=10)
+        data1 = r1.json().get("data", [])
+        results["this_week"] = {"expiry": expiry1, "status": r1.status_code, "count": len(data1), "first_item": data1[0] if data1 else None, "raw_resp": r1.json() if not data1 else "has_data"}
+
+        days2 = days + 7 if days == 0 else days + (7 - days) + 7
+        expiry2 = (d + timedelta(days=7 if days==0 else days+7)).strftime("%Y-%m-%d")
+        url2 = f"https://api.upstox.com/v2/option/chain?instrument_key={requests.utils.quote(BN_KEY)}&expiry_date={expiry2}"
+        r2 = requests.get(url2, headers=hdr(), timeout=10)
+        data2 = r2.json().get("data", [])
+        results["next_week"] = {"expiry": expiry2, "status": r2.status_code, "count": len(data2), "first_item": data2[0] if data2 else None}
+
+        results["bn_key"] = BN_KEY
+        results["today"] = str(d)
+        results["weekday"] = d.weekday()
+        return jsonify(results)
     except Exception as e:
-        return jsonify({"error": str(e)})
+        return jsonify({"error": str(e), "partial": results})
 
 # --- LIVE TRADING ROUTES ---
 
