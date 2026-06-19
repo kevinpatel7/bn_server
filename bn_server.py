@@ -2518,6 +2518,32 @@ def candles_api():
 @app.route("/ping")
 def ping(): return "pong"
 
+@app.route("/api/debug/optionchain")
+def debug_optionchain():
+    """Debug: show raw option chain structure to find correct field names."""
+    oc = cache.get("option_chain", [])
+    return jsonify({
+        "count": len(oc),
+        "sample": oc[:3] if oc else [],
+        "has_ce_key": any(item.get("ce_key") for item in oc) if oc else False,
+        "has_pe_key": any(item.get("pe_key") for item in oc) if oc else False
+    })
+
+@app.route("/api/debug/rawchain")
+def debug_rawchain():
+    """Debug: fetch raw Upstox option chain API response directly."""
+    try:
+        d = date.today()
+        days = (3 - d.weekday()) % 7
+        if days == 0: days = 7
+        expiry = (d + timedelta(days=days)).strftime("%Y-%m-%d")
+        url = f"https://api.upstox.com/v2/option/chain?instrument_key={requests.utils.quote(BN_KEY)}&expiry_date={expiry}"
+        r = requests.get(url, headers=hdr(), timeout=10)
+        data = r.json().get("data", [])
+        return jsonify({"status": r.status_code, "first_item": data[0] if data else None})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 # --- LIVE TRADING ROUTES ---
 
 @app.route("/api/live/status")
