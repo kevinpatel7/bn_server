@@ -240,7 +240,7 @@ live_config = {
     "enabled": False,           # OFF by default - turn ON manually
     "max_capital": 10000,       # ₹10,000 max
     "lots": 1,                  # 1 lot only
-    "qty": 15,                  # 15 qty per lot
+    "qty": 30,                  # 30 qty per lot (BN lot size updated)
     "max_daily_loss": 2000,     # stop after ₹2,000 loss
     "product": "I",             # Intraday
     "order_type": "MARKET",     # Market order for fast execution
@@ -267,22 +267,9 @@ def live_log(msg):
     print(f"[LIVE] {entry}")
 
 def get_option_instrument_key(strike, otype, expiry=None):
-    """Get Upstox instrument key for BN option."""
+    """Get Upstox instrument key for BN option from cached option chain."""
     try:
-        from datetime import date, timedelta
-        if not expiry:
-            d = date.today()
-            days = (3 - d.weekday()) % 7
-            if days == 0: days = 7
-            expiry = (d + timedelta(days=days))
-        exp_str = expiry.strftime("%y%b%d").upper()
-        # BN weekly option format: NSE_FO|BANKNIFTY{exp}{strike}{otype}
-        # e.g. NSE_FO|BANKNIFTY25MAY5400CE
-        exp_fmt = expiry.strftime("%d%b%y").upper()  # 14MAY25
-        symbol = f"BANKNIFTY{exp_fmt}{int(strike)}{otype}"
-        # Search in option chain for exact key
         oc = cache.get("option_chain", [])
-        ltp_key = "ce_ltp" if otype == "CE" else "pe_ltp"
         key_field = "ce_key" if otype == "CE" else "pe_key"
         for item in oc:
             if item.get("strike") == strike:
@@ -290,7 +277,14 @@ def get_option_instrument_key(strike, otype, expiry=None):
                 if key:
                     live_log(f"Found instrument key: {key}")
                     return key
-        live_log(f"Instrument key not found for {strike}{otype}")
+        # Try nearest strike if exact not found
+        if oc:
+            nearest = min(oc, key=lambda x: abs(x.get("strike", 0) - strike))
+            key = nearest.get(key_field)
+            if key:
+                live_log(f"Using nearest strike {nearest['strike']} key for {strike}{otype}")
+                return key
+        live_log(f"Instrument key not found for {strike}{otype} (chain has {len(oc)} strikes)")
         return None
     except Exception as e:
         live_log(f"Error getting instrument key: {e}")
@@ -663,13 +657,13 @@ def open_trade(signal, spot, vix):
 
     premium = estimate_premium(spot, strike, otype, vix)
     sl_premium = estimate_premium(sl, strike, otype, vix)
-    risk_per_lot = abs(premium - sl_premium) * 15
-    if risk_per_lot <= 0: risk_per_lot = premium * 0.3 * 15
+    risk_per_lot = abs(premium - sl_premium) * 30
+    if risk_per_lot <= 0: risk_per_lot = premium * 0.3 * 30
     max_risk = paper["capital"] * 0.01 * vix_factor
     lots = max(1, int(max_risk / risk_per_lot)) if risk_per_lot > 0 else 1
     lots = min(lots, 3)  # cap at 3 lots for safety
     print(f"[PAPER] VIX={vix} SL_width={sl_width}pts premium=₹{premium} risk_per_lot=₹{risk_per_lot:.0f} lots={lots}")
-    cost = premium * 15 * lots
+    cost = premium * 30 * lots
     if cost > paper["available"]: return  # not enough capital
     trade = {
         "id": len(paper["trades"]) + 1,
@@ -685,7 +679,7 @@ def open_trade(signal, spot, vix):
         "sl_width": sl_width,
         "vix_at_entry": vix,
         "lots": lots,
-        "qty": lots * 15,
+        "qty": lots * 30,
         "cost": round(cost, 2),
         "status": "OPEN",
         "exit_spot": None,
@@ -1902,7 +1896,7 @@ async function askAria() {
     const sl=parseFloat(document.getElementById('rc-s').value)||0;
     if(!cap||!ent||!sl){document.getElementById('rc-out').textContent='';return;}
     const risk=ent-sl; const lots=Math.floor((cap*0.01)/Math.max(risk*15,1));
-    document.getElementById('rc-out').textContent='Risk/lot: ₹'+Math.round(risk*15)+' | Lots: '+Math.max(1,lots)+' | Total risk: ₹'+Math.round(Math.max(1,lots)*risk*15);
+    document.getElementById('rc-out').textContent='Risk/lot: Rs.'+Math.round(risk*30)+' | Lots: '+Math.max(1,lots)+' | Total risk: ₹'+Math.round(Math.max(1,lots)*risk*15);
   });
 });
 
@@ -2075,11 +2069,40 @@ def fetch_quote(keys):
     except Exception as e:
         print(f"[QUOTE] {e}"); return {}
 
+_expiry_cache = {"date": None, "expiry": None}
+
+def get_current_expiry():
+    """Get nearest valid option expiry date by querying real contracts (cached per day)."""
+    today_str = str(date.today())
+    if _expiry_cache["date"] == today_str and _expiry_cache["expiry"]:
+        return _expiry_cache["expiry"]
+    try:
+        url = f"https://api.upstox.com/v2/option/contract?instrument_key={requests.utils.quote(BN_KEY)}"
+        r = requests.get(url, headers=hdr(), timeout=10)
+        contracts = r.json().get("data", [])
+        expiries = sorted(set(c.get("expiry") for c in contracts if c.get("expiry")))
+        today = date.today()
+        future_expiries = [e for e in expiries if datetime.strptime(e, "%Y-%m-%d").date() >= today]
+        if future_expiries:
+            nearest = future_expiries[0]
+            _expiry_cache["date"] = today_str
+            _expiry_cache["expiry"] = nearest
+            print(f"[EXPIRY] Using nearest expiry: {nearest}")
+            return nearest
+    except Exception as e:
+        print(f"[EXPIRY] Error fetching contracts: {e}")
+    # Fallback - last Tuesday of current month
+    d = date.today()
+    last_day = calendar.monthrange(d.year, d.month)[1]
+    last_date = date(d.year, d.month, last_day)
+    offset = (last_date.weekday() - 1) % 7  # Tuesday = 1
+    fallback = (last_date - timedelta(days=offset)).strftime("%Y-%m-%d")
+    print(f"[EXPIRY] Fallback expiry: {fallback}")
+    return fallback
+
 def fetch_option_chain(spot):
     try:
-        d = date.today()
-        days = (3 - d.weekday()) % 7  # 0 if today is Thursday (use today's expiry)
-        expiry = (d + timedelta(days=days)).strftime("%Y-%m-%d")
+        expiry = get_current_expiry()
         url = f"https://api.upstox.com/v2/option/chain?instrument_key={requests.utils.quote(BN_KEY)}&expiry_date={expiry}"
         r = requests.get(url, headers=hdr(), timeout=10)
         if r.status_code != 200: return None
