@@ -2517,6 +2517,26 @@ def candles_api():
 @app.route("/ping")
 def ping(): return "pong"
 
+@app.route("/api/debug/contracts")
+def debug_contracts():
+    """Get actual available option contracts and their real expiry dates from Upstox."""
+    try:
+        url = f"https://api.upstox.com/v2/option/contract?instrument_key={requests.utils.quote(BN_KEY)}"
+        r = requests.get(url, headers=hdr(), timeout=10)
+        resp = r.json()
+        contracts = resp.get("data", [])
+        expiries = sorted(set(c.get("expiry") for c in contracts if c.get("expiry")))
+        return jsonify({
+            "status": r.status_code,
+            "total_contracts": len(contracts),
+            "available_expiries": expiries[:10],
+            "sample_contract": contracts[0] if contracts else None,
+            "raw_status": resp.get("status"),
+            "raw_errors": resp.get("errors")
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
 @app.route("/api/debug/optionchain")
 def debug_optionchain():
     """Debug: show raw option chain structure to find correct field names."""
